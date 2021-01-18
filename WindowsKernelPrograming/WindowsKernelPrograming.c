@@ -9,6 +9,10 @@
  * PS:使用了下VS自带的git管理器连接远程库，直接生成的.gitignore非常方便，直接把该忽略的都写好了
  */
 
+/**
+ * 与黑客技术介绍的各技术的直接应用不同
+ * 书的开头介绍了很多驱动层开发更基本的知识
+ */
 
 VOID DriverUnload(PDRIVER_OBJECT DriverObject)
 {
