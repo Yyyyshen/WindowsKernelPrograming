@@ -334,19 +334,19 @@ NTSTATUS MyCopyFile(PUNICODE_STRING target_path, PUNICODE_STRING source_path)
  * 驱动中等待或停顿会使整个系统卡住，应启动另一个线程来做一些长期、耗时的操作
  * 驱动中生成的线程一般是系统线程，所在进程为System
  */
-VOID MyThreadProc(PVOID context)
+VOID MyThreadProc_Error(PVOID context)
 {
 	PUNICODE_STRING str = (PUNICODE_STRING)context;
 	DbgPrint("Print something in my thread.");
 	PsTerminateSystemThread(STATUS_SUCCESS);//结束自己
 }
-VOID Test_Thread()
+VOID Test_Thread_Error()
 {
 	UNICODE_STRING str = { 0 };
 	RtlInitUnicodeString(&str, L"Hello!");
 	HANDLE thread = NULL;
 	NTSTATUS status = STATUS_SUCCESS;
-	status = PsCreateSystemThread(&thread, 0, NULL, NULL, NULL, MyThreadProc, (PVOID)&str);
+	status = PsCreateSystemThread(&thread, 0, NULL, NULL, NULL, MyThreadProc_Error, (PVOID)&str);
 	//上面写法这里有个问题，当MyThreadProc执行时，本方法可能执行完毕了，堆栈中str可能已经释放，会导致蓝屏，所以要将str放在全局空间
 	//或者在后面加上等待线程结束的语句
 	if (!NT_SUCCESS(status))
@@ -357,6 +357,37 @@ VOID Test_Thread()
 	ZwClose(thread);
 }
 //同步事件
+//多线程中，如果一个线程需要等待另一个线程完成某事后才能做某事，则可以使用事件等待，另一个线程完成后设置事件（KeSetEvent）即可
+//同步事件很像是一个锁
+//另外还有通告事件，取决于初始化时传递的参数
+//上面例子的其中一种防止出错的方法如下，使用同步事件等待线程完成
+static KEVENT s_event;
+VOID MyThreadProc_Right(PVOID context)
+{
+	PUNICODE_STRING str = (PUNICODE_STRING)context;
+	DbgPrint("Print something in my thread.");
+	KeSetEvent(&s_event, 0, TRUE); //相当于开锁
+	PsTerminateSystemThread(STATUS_SUCCESS);//结束自己
+}
+VOID Test_Thread_Right()
+{
+	UNICODE_STRING str = { 0 };
+	RtlInitUnicodeString(&str, L"Hello!");
+	HANDLE thread = NULL;
+	NTSTATUS status = STATUS_SUCCESS;
+	KeInitializeEvent(&s_event, SynchronizationEvent, TRUE);//上锁
+	status = PsCreateSystemThread(&thread, 0, NULL, NULL, NULL, MyThreadProc_Right, (PVOID)&str);
+	//上面写法这里有个问题，当MyThreadProc执行时，本方法可能执行完毕了，堆栈中str可能已经释放，会导致蓝屏，所以要将str放在全局空间
+	//或者在后面加上等待线程结束的语句
+	if (!NT_SUCCESS(status))
+	{
+		//错误处理
+	}
+	//关闭句柄
+	ZwClose(thread);
+	//等待事件，防止堆栈释放
+	KeWaitForSingleObject(&s_event, Executive, KernelMode, 0, 0);
+}
 
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
