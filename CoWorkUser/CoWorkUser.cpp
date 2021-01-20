@@ -45,6 +45,8 @@ int main()
 	else
 		printf("coworker demo: Open device successfully.\r\n");
 
+	getchar();
+
 	if (!DeviceIoControl(device, CWK_DVC_SEND_STR, msg, strlen(msg) + 1, NULL, 0, &ret_len, 0))
 	{
 		printf("coworker demo: Send message failed.\r\n");
@@ -52,6 +54,8 @@ int main()
 	}
 	else
 		printf("coworker demo: Send message successfully.\r\n");
+
+	getchar();
 
 	// 这里开始，其实是对驱动的一系列测试。分配3个字符串：
 	// 1.长度为0.应该可以正常输入。
@@ -73,6 +77,8 @@ int main()
 			printf("TEST1 PASS.\r\n");
 		}
 
+		getchar();
+
 		memset(tst_msg, '\0', 512);
 		memset(tst_msg, 'a', 511);
 		if (!DeviceIoControl(device, CWK_DVC_SEND_STR, tst_msg, 512, NULL, 0, &ret_len, 0))
@@ -84,6 +90,8 @@ int main()
 		{
 			printf("TEST2 PASS.\r\n");
 		}
+
+		getchar();
 
 		memset(tst_msg, '\0', 513);
 		memset(tst_msg, 'a', 512);
@@ -98,6 +106,8 @@ int main()
 		{
 			printf("TEST3 PASS.\r\n");
 		}
+
+		getchar();
 
 		memset(tst_msg, '\0', 1024);
 		memset(tst_msg, 'a', 1023);
@@ -114,6 +124,8 @@ int main()
 		}
 		free(tst_msg);
 
+		getchar();
+
 		// 现在开始测试输出。第一个读出的应该是msg.
 		if (DeviceIoControl(device, CWK_DVC_RECV_STR, NULL, 0, tst_msg, 1024, &ret_len, 0) == 0 || ret_len != strlen(msg) + 1)
 		{
@@ -124,6 +136,8 @@ int main()
 		{
 			printf("TEST5 PASS.\r\n");
 		}
+
+		getchar();
 
 		// 第二个读出的应该是长度为0的空字符串。
 		if (DeviceIoControl(device, CWK_DVC_RECV_STR, NULL, 0, tst_msg, 1024, &ret_len, 0) == 0 || ret_len != 1)
@@ -136,6 +150,8 @@ int main()
 			printf("TEST6 PASS.\r\n");
 		}
 
+		getchar();
+
 		// 第三个读出的应该是长度为511的全a字符串
 		if (DeviceIoControl(device, CWK_DVC_RECV_STR, NULL, 0, tst_msg, 1024, &ret_len, 0) != 0 || ret_len != 511 + 1)
 		{
@@ -146,6 +162,8 @@ int main()
 		{
 			printf("TEST7 PASS.\r\n");
 		}
+
+		getchar();
 	} while (0);
 	CloseHandle(device);
 	return ret;

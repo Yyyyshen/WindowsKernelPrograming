@@ -1,4 +1,5 @@
-#include "ntddk.h"
+#include <ntifs.h>
+#include <wdmsec.h> //链接器添加 wdmsec.lib
 
 /**
  * 应用层与内核层通信
@@ -7,12 +8,21 @@
  * 设备对象可以在内核中暴露给应用层，让应用层像操作文件一样操作它
  */
 
+ /**
+  * IRQL_GT_ZERO_AT_SYSTEM_SERVICE (4a)
+  * Returning to usermode from a system call at an IRQL > PASSIVE_LEVEL.
+  *
+  * 例子在用户层应用调用DeviceIoControl发请求时蓝屏，实际测试书中配套例子同样有这个问题，先往后看
+  */
+
 #define DEV_NAME L"\\Device\\CO_WORK_DRIVER"
-#define SYM_NAME L"\\??\\MY_CO_WORK_DRIVER"
+#define SYM_NAME L"\\DosDevices\\MY_CO_WORK_DRIVER" //DosDevices的符号链接名就是??, 所以"\\DosDevices\\XXXX"其实就是\\??\\XXXX
 #define SDDL_SYM L"D:P(A;;GA;;;WD)" //安全描述符，D:P开头接多个类似括号中的符号，本例为允许任何用户访问该设备的安全字符串，方便测试
 
+const GUID  CWK_GUID_CLASS_MYCDO =
+{ 0x17a0d1e0L, 0x3249, 0x12e1, {0x92,0x16, 0x45, 0x1a, 0x21, 0x30, 0x29, 0x06} };
 
- // 从应用层给驱动发送一个字符串。
+// 从应用层给驱动发送一个字符串。
 #define  CWK_DVC_SEND_STR \
 	(ULONG)CTL_CODE( \
 	FILE_DEVICE_UNKNOWN, \
@@ -52,6 +62,8 @@ PCWK_STR_NODE cwkMallocStrNode()
 	return ret;
 }
 
+PDEVICE_OBJECT g_cdo = NULL;
+
 NTSTATUS CoWorkDispatch(PDEVICE_OBJECT pDevObj, PIRP pIrp)
 {
 	DbgPrint("Enter CoWorkDispatch\n");
@@ -60,7 +72,7 @@ NTSTATUS CoWorkDispatch(PDEVICE_OBJECT pDevObj, PIRP pIrp)
 	PIO_STACK_LOCATION  irpsp = IoGetCurrentIrpStackLocation(pIrp);
 	ULONG ret_len = 0;
 
-	while (pDevObj)
+	while (pDevObj == g_cdo)
 	{
 		if (irpsp->MajorFunction == IRP_MJ_CREATE || irpsp->MajorFunction == IRP_MJ_CLOSE)
 		{
@@ -180,9 +192,9 @@ VOID DriverUnload(PDRIVER_OBJECT pDriverObject)
 	UNICODE_STRING ustrSymName;
 	RtlInitUnicodeString(&ustrSymName, SYM_NAME);
 	IoDeleteSymbolicLink(&ustrSymName);
-	if (pDriverObject->DeviceObject)
+	if (g_cdo)
 	{
-		IoDeleteDevice(pDriverObject->DeviceObject);
+		IoDeleteDevice(g_cdo);
 	}
 	// 释放分配过的所有内核内存。
 	PCWK_STR_NODE str_node;
@@ -202,24 +214,35 @@ VOID DriverUnload(PDRIVER_OBJECT pDriverObject)
 
 NTSTATUS CreateDevice(PDRIVER_OBJECT pDriverObject)
 {
+	DbgPrint("Enter CreateDevice\n");
 	NTSTATUS status = STATUS_SUCCESS;
-	PDEVICE_OBJECT pDevObj = NULL;
-	UNICODE_STRING ustrDevName, ustrSymName;
+	UNICODE_STRING ustrDevName, ustrSymName, ustrSDDL;
 
 	RtlInitUnicodeString(&ustrDevName, DEV_NAME);
 	RtlInitUnicodeString(&ustrSymName, SYM_NAME);
-	status = IoCreateDevice(pDriverObject, 0, &ustrDevName, FILE_DEVICE_UNKNOWN, 0, FALSE, &pDevObj);
+	RtlInitUnicodeString(&ustrSDDL, SDDL_SYM);
+	//status = IoCreateDevice(pDriverObject, 0, &ustrDevName, FILE_DEVICE_UNKNOWN, 0, FALSE, &pDevObj);
+	status = IoCreateDeviceSecure( //创建一个所有用户都能访问的设备，方便测试，正式环境最好不用
+		pDriverObject,
+		0, &ustrDevName,
+		FILE_DEVICE_UNKNOWN,
+		FILE_DEVICE_SECURE_OPEN,
+		FALSE, &ustrSDDL,
+		(LPCGUID)&CWK_GUID_CLASS_MYCDO,
+		&g_cdo);
 	if (!NT_SUCCESS(status))
 	{
+		DbgPrint("IoCreateDevice Failed\n");
 		return status;
 	}
 	status = IoCreateSymbolicLink(&ustrSymName, &ustrDevName);
 	if (!NT_SUCCESS(status))
 	{
-		IoDeleteDevice(pDevObj);
+		DbgPrint("IoCreateSymbolicLink Failed\n");
+		IoDeleteDevice(g_cdo);
 		return status;
 	}
-
+	DbgPrint("Leave CreateDevice\n");
 	return status;
 }
 
