@@ -13,6 +13,9 @@
   * Returning to usermode from a system call at an IRQL > PASSIVE_LEVEL.
   *
   * 例子在用户层应用调用DeviceIoControl发请求时蓝屏，实际测试书中配套例子同样有这个问题，先往后看
+  * 
+  * 验证了下，单纯输出获取到的信息是不会蓝屏的
+  * 原因应该是使用了自旋锁，IRQL提升到了DISPATCH_LEVEL，所以蓝屏dump信息如上
   */
 
 #define DEV_NAME L"\\Device\\CO_WORK_DRIVER"
