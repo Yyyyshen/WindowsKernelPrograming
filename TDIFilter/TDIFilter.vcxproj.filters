@@ -27,5 +27,19 @@
     <ClCompile Include="TDIFilter.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="memtrack.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="sock.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="memtrack.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="sock.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

@@ -147,7 +147,13 @@
     <FilesToPackage Include="$(TargetPath)" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="memtrack.c" />
+    <ClCompile Include="sock.c" />
     <ClCompile Include="TDIFilter.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="memtrack.h" />
+    <ClInclude Include="sock.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
