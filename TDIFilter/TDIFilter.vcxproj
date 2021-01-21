@@ -148,11 +148,13 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="memtrack.c" />
+    <ClCompile Include="obj_tbl.c" />
     <ClCompile Include="sock.c" />
     <ClCompile Include="TDIFilter.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="memtrack.h" />
+    <ClInclude Include="obj_tbl.h" />
     <ClInclude Include="sock.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -105,6 +105,9 @@ enum {
 	IRP_CLOSE
 };
 
+//保存文件对象的对应关系，阉割了部分代码，完整的见TDIFW项目
+#include "obj_tbl.h"
+
 //根据过滤设备对象获取真实设备对象
 PDEVICE_OBJECT get_original_devobj(PDEVICE_OBJECT flt_devobj, int* proto)
 {
@@ -251,8 +254,9 @@ NTSTATUS tdi_create_addrobj_complete(IN PDEVICE_OBJECT DeviceObject, IN PIRP Irp
 
 	return status;
 }
-int deal_tdi_create(PIRP irp, PIO_STACK_LOCATION irps, struct _completion* completion, PDEVICE_OBJECT devobj)
+int deal_tdi_create(PIRP irp, PIO_STACK_LOCATION irps, struct _completion* completion, PDEVICE_OBJECT devobj, int ipproto)
 {
+	NTSTATUS status;
 	//可在此处获取当前进程
 	ULONG pid = (ULONG)PsGetCurrentProcessId();
 	//请求一般由ZwCreateFile调用引发，函数中EaBuffer指针存放了EA数据，可以在这个过程获取
@@ -261,13 +265,14 @@ int deal_tdi_create(PIRP irp, PIO_STACK_LOCATION irps, struct _completion* compl
 	//预定义结果：TdiTransportAddress 表示目前生成的时一个传输层地址（一般就是IP）
 	//TdiConnectionContext 表示目前生成一个连接终端
 	//二者都有一个对应的文件对象
-	//只有这个请求被发送到下层完成后，才能发送查询请求询问IP和端口，可将信息保存到结构体指针中
+	//TDI建立连接的方式：过程总是先生成一个传输层地址，再生成一个连接终端，接着用一个控制请求将二者联系起来
 	if (ea != NULL)
 	{
 		if (ea->EaNameLength == TDI_TRANSPORT_ADDRESS_LENGTH && memcmp(ea->EaName, TdiTransportAddress, TDI_TRANSPORT_ADDRESS_LENGTH) == 0)
 		{
 			//这里捕获传输层地址生成
-			//需要询问被打开文件对象来获得IP和端口，询问需要构建一个请求
+			//只有这个请求被发送到下层完成后，才能发送查询请求询问IP和端口
+			//询问被打开文件对象来获得IP和端口，询问需要构建一个请求
 			PIRP query_irp;
 			query_irp = TdiBuildInternalDeviceControlIrp(TDI_QUERY_INFORMATION, devobj, irps->FileObject, NULL, NULL);
 			//请求完成函数一般在DISPATCH中断级调用，而只有PASSIVE中断级才能调用TdiBuildInternalDeviceControlIrp，而分发函数一般就在PASSIVE中断级，满足条件
@@ -279,10 +284,26 @@ int deal_tdi_create(PIRP irp, PIO_STACK_LOCATION irps, struct _completion* compl
 			completion->routine = tdi_create_addrobj_complete;
 			//记录已分配请求，方便使用
 			completion->context = query_irp;
+
+			//文件对象与生成地址也应该对应的保存下来
+			status = ot_add_fileobj(irps->DeviceObject, irps->FileObject, FILEOBJ_ADDROBJ, ipproto, NULL);
+			if (status != STATUS_SUCCESS) {
+				KdPrint(("[tdi_fw] tdi_create: ot_add_fileobj: FILEOBJ_ADDROBJ 0x%x\n", status));
+				return FILTER_DENY;
+			}
 		}
 		else if (ea->EaNameLength == TDI_CONNECTION_CONTEXT_LENGTH && memcmp(ea->EaName, TdiConnectionContext, TDI_CONNECTION_CONTEXT_LENGTH) == 0)
 		{
-			//捕获连接中断生成
+			//捕获连接终端生成
+			CONNECTION_CONTEXT conn_ctx = *(CONNECTION_CONTEXT*)(ea->EaName + ea->EaNameLength + 1);//计算地址转换为指针再取值
+			//一个终端生成后，一个文件对象生成
+
+			//这之后所有截获到的DeviceIoControl截获到的都只是文件对象，所以应该在内存中维护一个哈希表把文件对象和连接上下文对应起来
+			status = ot_add_fileobj(irps->DeviceObject, irps->FileObject, FILEOBJ_CONNOBJ, ipproto, conn_ctx);
+			if (status != STATUS_SUCCESS) {
+				KdPrint(("[tdi_fw] tdi_create: ot_add_fileobj: FILEOBJ_CONNOBJ 0x%x\n", status));
+				return FILTER_DENY;
+			}
 		}
 	}
 
@@ -341,7 +362,8 @@ tdi_dispatch_complete(PDEVICE_OBJECT devobj, PIRP irp, int filter, PIO_COMPLETIO
 NTSTATUS DeviceDispatch(PDEVICE_OBJECT DeviceObject, PIRP irp)
 {
 	NTSTATUS status;
-	PDEVICE_OBJECT old_devobj = get_original_devobj(DeviceObject, NULL);
+	int ipproto;
+	PDEVICE_OBJECT old_devobj = get_original_devobj(DeviceObject, &ipproto);
 	if (old_devobj != NULL)
 	{
 		//获取当前栈空间
@@ -356,7 +378,7 @@ NTSTATUS DeviceDispatch(PDEVICE_OBJECT DeviceObject, PIRP irp)
 		case IRP_MJ_CREATE: //生成请求
 		{
 			//处理生成请求
-			result = deal_tdi_create(irp, irps, &completion, old_devobj);
+			result = deal_tdi_create(irp, irps, &completion, old_devobj, ipproto);
 			//请求将在下面函数完成，完成后completion.routine记录的完成函数被调用
 			status = tdi_dispatch_complete(DeviceObject, irp, result, completion.routine, completion.context, IRP_CREATE);
 			break;
