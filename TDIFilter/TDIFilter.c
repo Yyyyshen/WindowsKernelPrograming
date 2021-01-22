@@ -314,11 +314,11 @@ int deal_tdi_create(PIRP irp, PIO_STACK_LOCATION irps, struct _completion* compl
 	return FILTER_ALLOW;
 }
 //在连接进入事件中设置自定义回调回调函数
-typedef struct {
-	PFILE_OBJECT fileobj;
-	PVOID old_handler;
-	PVOID old_context; //就是回调函数的第一个参数
-}TDI_EVENT_CONTEXT; //自定义上下文信息结构
+//typedef struct {
+//	PFILE_OBJECT fileobj;
+//	PVOID old_handler;
+//	PVOID old_context; //就是回调函数的第一个参数
+//}TDI_EVENT_CONTEXT; //自定义上下文信息结构
 NTSTATUS my_handler(PVOID TdiEventContext, LONG RemoteAddressLength, PVOID RemoteAddress, LONG UserDataLength, PVOID UserData,
 	LONG OptionsLength, PVOID Options, CONNECTION_CONTEXT* ConnectionContext, PIRP* AcceptIrp)
 {
@@ -441,7 +441,8 @@ tdi_dispatch_complete(PDEVICE_OBJECT devobj, PIRP irp, int filter, PIO_COMPLETIO
 				//执行完自己的回调，再调用原本的函数，实现侦听
 				if (type == TDI_EVENT_CONNECT && r->EventHandler != NULL)
 				{
-					TDI_EVENT_CONTEXT* ctx;//自定义上下文结构存储原来回调函数信息
+					TDI_EVENT_CONTEXT ctx_ = { 0 };
+					TDI_EVENT_CONTEXT* ctx = &ctx_;//自定义上下文结构存储原来回调函数信息
 					ctx->fileobj = irps->FileObject;
 					ctx->old_handler = r->EventHandler;
 					ctx->old_context = r->EventContext;
@@ -492,7 +493,13 @@ NTSTATUS DeviceDispatch(PDEVICE_OBJECT DeviceObject, PIRP irp)
 		}
 		case IRP_MJ_DEVICE_CONTROL: //设备控制
 			//这种请求与IRP_MJ_INTERNAL_DEVICE_CONTROL基本重复（除了netbt发送数据问题）
-			status = TdiMapUserRequest(DeviceObject, irp, irps);//可以调用该函数将IRP_MJ_DEVICE_CONTROL转换为IRP_MJ_INTERNAL_DEVICE_CONTROL
+			//可以调用该函数将IRP_MJ_DEVICE_CONTROL转换为IRP_MJ_INTERNAL_DEVICE_CONTROL
+			if (KeGetCurrentIrql() == PASSIVE_LEVEL) {
+				//注意有中断级别限制
+				status = TdiMapUserRequest(DeviceObject, irp, irps);
+			}
+			else
+				status = STATUS_NOT_IMPLEMENTED; // set fake status
 
 			status = tdi_dispatch_complete(DeviceObject, irp, FILTER_ALLOW, completion.routine, completion.context, IRP_CONTROL);
 

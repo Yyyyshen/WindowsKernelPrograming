@@ -35,13 +35,13 @@
     </ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
-    <ProjectGuid>{264B0ED2-906A-476A-8F41-A367D38DE995}</ProjectGuid>
+    <ProjectGuid>{C2540CE9-C8D1-49BE-808D-E215B23BA011}</ProjectGuid>
     <TemplateGuid>{dd38f7fc-d7bd-488b-9242-7d8754cde80d}</TemplateGuid>
     <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
     <MinimumVisualStudioVersion>12.0</MinimumVisualStudioVersion>
     <Configuration>Debug</Configuration>
     <Platform Condition="'$(Platform)' == ''">Win32</Platform>
-    <RootNamespace>TDIFilter</RootNamespace>
+    <RootNamespace>WFPDemo</RootNamespace>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -138,25 +138,16 @@
     </ClCompile>
     <Link>
       <TreatLinkerWarningAsErrors>false</TreatLinkerWarningAsErrors>
-      <AdditionalDependencies>tdi.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <Inf Include="TDIFilter.inf" />
+    <Inf Include="WFPDemo.inf" />
   </ItemGroup>
   <ItemGroup>
     <FilesToPackage Include="$(TargetPath)" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="memtrack.c" />
-    <ClCompile Include="obj_tbl.c" />
-    <ClCompile Include="sock.c" />
-    <ClCompile Include="TDIFilter.c" />
-  </ItemGroup>
-  <ItemGroup>
-    <ClInclude Include="memtrack.h" />
-    <ClInclude Include="obj_tbl.h" />
-    <ClInclude Include="sock.h" />
+    <ClCompile Include="WFPDemo.c" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
