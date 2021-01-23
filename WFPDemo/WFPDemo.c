@@ -3,6 +3,8 @@
 #include <fwpmk.h>
 /**
  * WFP（Windows Filter Platform，Windows过滤平台）
+ * 官方文档：
+ * https://docs.microsoft.com/zh-cn/windows-hardware/drivers/network/windows-filtering-platform-callout-drivers2
  * 微软希望用WFP来代替之前的Winsock LSP、TDI以及NDIS等网络过滤驱动
  * 开发者可以在WFP划分的不同分层进行过滤、重定向、修改等
  * 通过WFP，可以实现防火墙、入侵检测、网络监视、流量控制等
@@ -82,8 +84,8 @@ typedef struct _my_fwps_callout
 {
 	GUID calloutKey;
 	UINT32 flags;
-	FWPS_CALLOUT_CLASSIFY_FN classifyFn;//不同环境中有不同编号
-	FWPS_CALLOUT_NOTIFY_FN notifyFn;//不同环境中有不同编号
+	FWPS_CALLOUT_CLASSIFY_FN classifyFn;//不同环境中有不同编号 使用宏来定义的结构体或函数基本都是有系统环境区分的
+	FWPS_CALLOUT_NOTIFY_FN notifyFn;
 	FWPS_CALLOUT_FLOW_DELETE_NOTIFY_FN flowDeleteFn;//目前各环境都是同一个
 }my_fwps_callout;
 
@@ -164,6 +166,58 @@ VOID NTAPI my_flowDeleteFn(
 	//当一个数据流要被终止时，此函数会被回调（只有在这个将要终止的数据流被关联的情况下，才会被调用）
 }
 
+/**
+ * WFP使用基本流程
+ * 定义呼出接口，向引擎注册接口
+ * 添加注册的接口到过滤引擎（注册和添加是两个不同操作）
+ * 设计一个或多个子层，添加到分层中
+ * 设计过滤器，把接口、子层、分层和过滤器关联起来，向过滤引擎添加过滤器
+ */
+VOID manual(PDRIVER_OBJECT DriverObject)
+{
+	NTSTATUS status;
+	FWPS_CALLOUT callout = { 0 };//内含各呼出函数和一个自定义的唯一标识
+	UINT32 calloutId;//接收生成的唯一标识，与自定义标识不同，是WFP分配的，可以称为运行时标识
+	status = FwpsCalloutRegister(DriverObject, &callout, &calloutId);//注册
+	//FwpsCalloutUnregisterById(calloutId);//通过分配的运行时id卸载
+	//FwpsCalloutUnregisterByKey(&callout.calloutKey);//通过自定义GUID标识卸载
+
+	//成功或已定义，其他情况返回错误码
+	if (status == STATUS_SUCCESS || status == STATUS_FWP_ALREADY_EXISTS)
+	{
+		//注册成功后打开过滤引擎
+		HANDLE hEngine = NULL;
+		NTSTATUS status = STATUS_SUCCESS;
+		FWPM_SESSION session = { 0 };//WFP的API基于会话
+		session.flags = FWPM_SESSION_FLAG_DYNAMIC;
+		status = FwpmEngineOpen(NULL,//必须是NULL
+			RPC_C_AUTHN_WINNT,//只能为此值或RPC_C_AUTHN_DEFAULT
+			NULL,
+			&session,//设置为NULL也可以
+			&hEngine);//返回打开的过滤引擎句柄
+		//FwpmEngineClose(hEngine); //关闭引擎
+
+		//将注册好的接口添加到过滤引擎中
+		UINT32 callout_id;
+		status = FwpmCalloutAdd(hEngine, &callout, NULL, &callout_id);//状态码与注册时返回一致
+		//FwpmCalloutDeleteById(callout_id); //通过添加时返回的id进行删除
+
+		//添加子层
+		FWPM_SUBLAYER subLayer = { 0 };
+		PSECURITY_DESCRIPTOR sd = NULL;//安全描述符，可以简单传NULL
+		status = FwpmSubLayerAdd(hEngine, &subLayer, sd);
+		//FwpmSubLayerDeleteByKey(hEngine,&subLayer.subLayerKey); //删除子层
+
+		//添加过滤器
+		FWPM_FILTER filter = { 0 };//需要设置的成员相对较多
+		ULONG64 filterid;
+		status = FwpmFilterAdd(hEngine, &filter, sd, &filterid);
+		//FwpmFilterDeleteById(hEngine,filterid); //删除过滤器
+
+		//至此将回调函数、子层、过滤器与过滤引擎关联起来了
+	}
+
+}
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 {
