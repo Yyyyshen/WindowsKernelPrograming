@@ -1,6 +1,6 @@
 #include <ntddk.h>
 #include <fwpsk.h> //使用fwp需要预定义NDIS支持版本：NDIS_SUPPORT_NDIS6
-#include <fwpmk.h>
+#include <fwpmk.h> //还需添加库依赖fwpkclnt.lib （一般还需要uuid.lib）
 /**
  * WFP（Windows Filter Platform，Windows过滤平台）
  * 官方文档：
@@ -219,7 +219,155 @@ VOID manual(PDRIVER_OBJECT DriverObject)
 
 }
 
+//===============================================
+//		一个简易例子：拦截对外80端口的访问
+//===============================================
+
+#include "WFPSample.h"
+#include "Rule.h"
+
+PDEVICE_OBJECT g_pDeviceObj = NULL;
+#define WFP_DEVICE_NAME		L"\\Device\\wfp_sample_device"
+#define WFP_SYM_LINK_NAME	L"\\DosDevices\\wfp_sample_device"
+
+//创建设备
+PDEVICE_OBJECT	CreateDevice(PDRIVER_OBJECT DriverObject)
+{
+	UNICODE_STRING	uDeviceName = { 0 };
+	UNICODE_STRING	uSymbolName = { 0 };
+	PDEVICE_OBJECT	pDeviceObj = NULL;
+	NTSTATUS nStatsus = STATUS_UNSUCCESSFUL;
+	RtlInitUnicodeString(&uDeviceName, WFP_DEVICE_NAME);
+	RtlInitUnicodeString(&uSymbolName, WFP_SYM_LINK_NAME);
+	nStatsus = IoCreateDevice(DriverObject, 0, &uDeviceName, FILE_DEVICE_UNKNOWN, 0, FALSE, &pDeviceObj);
+	if (pDeviceObj != NULL)
+	{
+		pDeviceObj->Flags |= DO_BUFFERED_IO;
+	}
+	IoCreateSymbolicLink(&uSymbolName, &uDeviceName);
+	return pDeviceObj;
+}
+
+//删除设备
+VOID DeleteDevice()
+{
+	UNICODE_STRING uSymbolName = { 0 };
+	RtlInitUnicodeString(&uSymbolName, WFP_SYM_LINK_NAME);
+	IoDeleteSymbolicLink(&uSymbolName);
+	if (g_pDeviceObj != NULL)
+	{
+		IoDeleteDevice(g_pDeviceObj);
+	}
+	g_pDeviceObj = NULL;
+}
+
+//驱动卸载，清理资源
+VOID  DriverUnload(PDRIVER_OBJECT DriverObject)
+{
+	UninitWfp();
+	DeleteDevice();
+	UninitRuleInfo();
+	return;
+}
+
+//IRP请求分发函数
+NTSTATUS WfpSampleIRPDispatch(IN PDEVICE_OBJECT DeviceObject, IN PIRP Irp)
+{
+	NTSTATUS nStatus = STATUS_SUCCESS;
+	ULONG	ulInformation = 0;
+	UNREFERENCED_PARAMETER(DeviceObject);
+	do
+	{
+		PIO_STACK_LOCATION	IrpStack = NULL;
+		PVOID pSystemBuffer = NULL;
+		ULONG uInLen = 0;
+		if (Irp == NULL)
+		{
+			break;
+		}
+		pSystemBuffer = Irp->AssociatedIrp.SystemBuffer;
+		IrpStack = IoGetCurrentIrpStackLocation(Irp);
+		if (IrpStack == NULL)
+		{
+			break;
+		}
+		uInLen = IrpStack->Parameters.DeviceIoControl.InputBufferLength;
+		if (IrpStack->MajorFunction != IRP_MJ_DEVICE_CONTROL)
+		{
+			break;
+		}
+		// 开始处理DeivceIoControl的情况
+		switch (IrpStack->Parameters.DeviceIoControl.IoControlCode)
+		{
+		case IOCTL_WFP_SAMPLE_ADD_RULE:
+		{
+			BOOLEAN bSucc = FALSE;
+			bSucc = AddNetRuleInfo(pSystemBuffer, uInLen);
+			if (bSucc == FALSE)
+			{
+				nStatus = STATUS_UNSUCCESSFUL;
+			}
+			break;
+		}
+		default:
+		{
+			ulInformation = 0;
+			nStatus = STATUS_UNSUCCESSFUL;
+		}
+		}
+	} while (FALSE);
+	if (Irp != NULL)
+	{
+		Irp->IoStatus.Information = ulInformation;
+		Irp->IoStatus.Status = nStatus;
+		IoCompleteRequest(Irp, IO_NO_INCREMENT);
+	}
+	return nStatus;
+}
+
+//驱动入口
 NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 {
-	return STATUS_SUCCESS;
+	NTSTATUS status = STATUS_UNSUCCESSFUL;
+
+	do
+	{
+		if (DriverObject == NULL)
+		{
+			break;
+		}
+		//定义分发函数
+		DriverObject->MajorFunction[IRP_MJ_CREATE] = WfpSampleIRPDispatch;
+		DriverObject->MajorFunction[IRP_MJ_CLOSE] = WfpSampleIRPDispatch;
+		DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = WfpSampleIRPDispatch;
+		//初始化规则
+		if (FALSE == InitRuleInfo())
+		{
+			break;
+		}
+		//创建设备
+		g_pDeviceObj = CreateDevice(DriverObject);
+		if (g_pDeviceObj == NULL)
+		{
+			break;
+		}
+		//初始化WFP
+		status = InitWfp(g_pDeviceObj);
+		if (status != STATUS_SUCCESS)
+		{
+			break;
+		}
+		//设置驱动卸载函数
+		DriverObject->DriverUnload = DriverUnload;
+		status = STATUS_SUCCESS;
+	} while (FALSE);
+
+	if (status != STATUS_SUCCESS)
+	{
+		//回收资源、删除设备
+		UninitWfp();
+		DeleteDevice();
+	}
+
+	return status;
 }

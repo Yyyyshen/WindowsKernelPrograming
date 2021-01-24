@@ -27,5 +27,19 @@
     <ClCompile Include="WFPDemo.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="WFPSample.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Rule.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="WFPSample.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Rule.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>
