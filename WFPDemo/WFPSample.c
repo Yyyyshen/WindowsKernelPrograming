@@ -58,6 +58,8 @@ VOID NTAPI Wfp_Sample_Established_ClassifyFn_V4(
 	WORD	wProtocol = 0;
 	ULONG	ulSrcIPAddress = 0;
 	ULONG	ulRemoteIPAddress = 0;
+	CHAR szProtocalName[12] = { 0 };
+
 	if (!(classifyOut->rights & FWPS_RIGHT_ACTION_WRITE))
 	{
 		return;
@@ -79,9 +81,30 @@ VOID NTAPI Wfp_Sample_Established_ClassifyFn_V4(
 
 	//wProtocol表示网络协议，可以取值是IPPROTO_ICMP/IPPROTO_UDP/IPPROTO_TCP
 	wProtocol = inFixedValues->incomingValue[FWPS_FIELD_ALE_FLOW_ESTABLISHED_V4_IP_PROTOCOL].value.uint8;
+	ProtocalIdToName(wProtocol, szProtocalName);//协议判断
+
+	//获取当前中断级
+	KIRQL kCurrentIrql = KeGetCurrentIrql();
+
+	//获取进程ID
+	ULONG64 processId = inMetaValues->processId;
 
 	//输出一下
-	KdPrint(("Direction:%d  Local: %d:%d  Remote: %d:%d Protocol: %d", wDirection, ulSrcIPAddress, wSrcPort, ulRemoteIPAddress, wRemotePort, wProtocol));
+	DbgPrint("Protocal=%s, Direction:%d, LocalIp=%u.%u.%u.%u:%d, RemoteIp=%u.%u.%u.%u:%d, IRQL=%d, PID=%I64d\n",
+		szProtocalName,
+		wDirection,
+		(ulSrcIPAddress >> 24) & 0xFF,
+		(ulSrcIPAddress >> 16) & 0xFF,
+		(ulSrcIPAddress >> 8) & 0xFF,
+		(ulSrcIPAddress) & 0xFF,
+		wSrcPort,
+		(ulRemoteIPAddress >> 24) & 0xFF,
+		(ulRemoteIPAddress >> 16) & 0xFF,
+		(ulRemoteIPAddress >> 8) & 0xFF,
+		(ulRemoteIPAddress) & 0xFF,
+		wRemotePort,
+		kCurrentIrql,
+		processId);
 
 	//默认"允许"(PERMIT)
 	classifyOut->actionType = FWP_ACTION_PERMIT;
@@ -98,6 +121,7 @@ VOID NTAPI Wfp_Sample_Established_ClassifyFn_V4(
 		//TCP协议尝试发起80端口的访问，拦截(BLOCK)
 		classifyOut->actionType = FWP_ACTION_BLOCK;
 		//测试通过，也暂时没有蓝屏情况，回去看下另一个例子
+		//通过提供的丰富信息，可以做更多规则限定
 	}
 
 	//清除FWPS_RIGHT_ACTION_WRITE标记
@@ -314,4 +338,52 @@ VOID UninitWfp()
 	WfpRemoveCallouts();
 	WfpUnRegisterCallouts();
 	CloseEngine();
+}
+
+// 协议判断
+NTSTATUS ProtocalIdToName(UINT16 protocalId, PCHAR lpszProtocalName)
+{
+	NTSTATUS status = STATUS_SUCCESS;
+
+	switch (protocalId)
+	{
+	case 1:
+	{
+		// ICMP
+		RtlCopyMemory(lpszProtocalName, "ICMP", 5);
+		break;
+	}
+	case 2:
+	{
+		// IGMP
+		RtlCopyMemory(lpszProtocalName, "IGMP", 5);
+		break;
+	}
+	case 6:
+	{
+		// TCP
+		RtlCopyMemory(lpszProtocalName, "TCP", 4);
+		break;
+	}
+	case 17:
+	{
+		// UDP
+		RtlCopyMemory(lpszProtocalName, "UDP", 4);
+		break;
+	}
+	case 27:
+	{
+		// RDP
+		RtlCopyMemory(lpszProtocalName, "RDP", 4);
+		break;
+	}
+	default:
+	{
+		// UNKNOW
+		RtlCopyMemory(lpszProtocalName, "UNKNOWN", 8);
+		break;
+	}
+	}
+
+	return status;
 }

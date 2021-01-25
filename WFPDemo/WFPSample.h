@@ -84,3 +84,5 @@ void CloseEngine();
 NTSTATUS InitWfp(PDEVICE_OBJECT DeviceObject);
 
 VOID UninitWfp();
+
+NTSTATUS ProtocalIdToName(UINT16 protocalId, PCHAR lpszProtocalName);
