@@ -97,6 +97,7 @@ VOID NTAPI Wfp_Sample_Established_ClassifyFn_V4(
 	{
 		//TCP协议尝试发起80端口的访问，拦截(BLOCK)
 		classifyOut->actionType = FWP_ACTION_BLOCK;
+		//测试通过，也暂时没有蓝屏情况，回去看下另一个例子
 	}
 
 	//清除FWPS_RIGHT_ACTION_WRITE标记
