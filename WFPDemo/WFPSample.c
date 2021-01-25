@@ -48,7 +48,7 @@ VOID NTAPI Wfp_Sample_Established_ClassifyFn_V4(
 	IN const FWPS_INCOMING_METADATA_VALUES* inMetaValues,
 	IN OUT VOID* layerData,
 	IN OPTIONAL const void* classifyContext,
-	IN const FWPS_FILTER1* filter,
+	IN const FWPS_FILTER* filter,
 	IN UINT64  flowContext,
 	OUT FWPS_CLASSIFY_OUT* classifyOut
 )
@@ -122,6 +122,32 @@ VOID NTAPI Wfp_Sample_Established_FlowDeleteFn_V4(
 )
 {
 
+}
+
+NTSTATUS WfpRegisterCalloutImple(
+	IN OUT void* deviceObject,
+	IN  FWPS_CALLOUT_CLASSIFY_FN ClassifyFunction,
+	IN  FWPS_CALLOUT_NOTIFY_FN NotifyFunction,
+	IN  FWPS_CALLOUT_FLOW_DELETE_NOTIFY_FN FlowDeleteFunction,
+	IN  GUID const* calloutKey,
+	IN  UINT32 flags,
+	OUT UINT32* calloutId
+)
+{
+	FWPS_CALLOUT sCallout;
+	NTSTATUS status = STATUS_SUCCESS;
+
+	memset(&sCallout, 0, sizeof(FWPS_CALLOUT));
+
+	sCallout.calloutKey = *calloutKey;
+	sCallout.flags = flags;
+	sCallout.classifyFn = ClassifyFunction;
+	sCallout.notifyFn = NotifyFunction;
+	sCallout.flowDeleteFn = FlowDeleteFunction;
+
+	status = FwpsCalloutRegister(deviceObject, &sCallout, calloutId);
+
+	return status;
 }
 
 NTSTATUS WfpRegisterCallouts(IN OUT VOID* deviceObject)
