@@ -1,6 +1,7 @@
 #include <ntddk.h>
 #include <fwpsk.h> //使用fwp需要预定义NDIS支持版本：NDIS_SUPPORT_NDIS6
 #include <fwpmk.h> //还需添加库依赖fwpkclnt.lib （一般还需要uuid.lib）
+//有关于各头文件包含功能和前缀（FWPS与FWPM）区别文档：  https://docs.microsoft.com/en-us/windows/win32/fwp/api-sets 
 /**
  * WFP（Windows Filter Platform，Windows过滤平台）
  * 官方文档：
@@ -176,9 +177,9 @@ VOID NTAPI my_flowDeleteFn(
 VOID manual(PDRIVER_OBJECT DriverObject)
 {
 	NTSTATUS status;
-	FWPS_CALLOUT callout = { 0 };//内含各呼出函数和一个自定义的唯一标识
+	FWPS_CALLOUT callout_reg = { 0 };//设置各呼出函数和一个自定义的唯一标识
 	UINT32 calloutId;//接收生成的唯一标识，与自定义标识不同，是WFP分配的，可以称为运行时标识
-	status = FwpsCalloutRegister(DriverObject, &callout, &calloutId);//注册
+	status = FwpsCalloutRegister(DriverObject, &callout_reg, &calloutId);//注册
 	//FwpsCalloutUnregisterById(calloutId);//通过分配的运行时id卸载
 	//FwpsCalloutUnregisterByKey(&callout.calloutKey);//通过自定义GUID标识卸载
 
@@ -198,12 +199,13 @@ VOID manual(PDRIVER_OBJECT DriverObject)
 		//FwpmEngineClose(hEngine); //关闭引擎
 
 		//将注册好的接口添加到过滤引擎中
+		FWPM_CALLOUT callout_add = { 0 };//设置分层，注意与注册不同，一个是FWPS一个是FWPM
 		UINT32 callout_id;
-		status = FwpmCalloutAdd(hEngine, &callout, NULL, &callout_id);//状态码与注册时返回一致
+		status = FwpmCalloutAdd(hEngine, &callout_add, NULL, &callout_id);
 		//FwpmCalloutDeleteById(callout_id); //通过添加时返回的id进行删除
 
 		//添加子层
-		FWPM_SUBLAYER subLayer = { 0 };
+		FWPM_SUBLAYER subLayer = { 0 };//设置权重
 		PSECURITY_DESCRIPTOR sd = NULL;//安全描述符，可以简单传NULL
 		status = FwpmSubLayerAdd(hEngine, &subLayer, sd);
 		//FwpmSubLayerDeleteByKey(hEngine,&subLayer.subLayerKey); //删除子层

@@ -25,7 +25,6 @@ NTSTATUS InitWfp(PDEVICE_OBJECT DeviceObject)
 		{
 			break;
 		}
-
 		if (STATUS_SUCCESS != WfpAddCallouts())
 		{
 			break;
@@ -72,7 +71,7 @@ VOID NTAPI Wfp_Sample_Established_ClassifyFn_V4(
 	//wRemotePort表示远端端口，主机序
 	wRemotePort = inFixedValues->incomingValue[FWPS_FIELD_ALE_FLOW_ESTABLISHED_V4_IP_REMOTE_PORT].value.uint16;
 
-	//ulSrcIPAddress 表示源IP
+	//ulSrcIPAddress 表示本地IP
 	ulSrcIPAddress = inFixedValues->incomingValue[FWPS_FIELD_ALE_FLOW_ESTABLISHED_V4_IP_LOCAL_ADDRESS].value.uint32;
 
 	//ulRemoteIPAddress 表示远端IP
@@ -81,6 +80,9 @@ VOID NTAPI Wfp_Sample_Established_ClassifyFn_V4(
 	//wProtocol表示网络协议，可以取值是IPPROTO_ICMP/IPPROTO_UDP/IPPROTO_TCP
 	wProtocol = inFixedValues->incomingValue[FWPS_FIELD_ALE_FLOW_ESTABLISHED_V4_IP_PROTOCOL].value.uint8;
 
+	//输出一下
+	KdPrint(("Direction:%d  Local: %d:%d  Remote: %d:%d Protocol: %d", wDirection, ulSrcIPAddress, wSrcPort, ulRemoteIPAddress, wRemotePort, wProtocol));
+
 	//默认"允许"(PERMIT)
 	classifyOut->actionType = FWP_ACTION_PERMIT;
 
@@ -88,7 +90,7 @@ VOID NTAPI Wfp_Sample_Established_ClassifyFn_V4(
 	{
 		classifyOut->actionType = FWP_ACTION_BLOCK;
 	}
-	//简单的策略判断，读者可以重写这部分
+	//简单的策略判断，若满足为TCP、对外连接、端口为80，则拦截
 	if ((wProtocol == IPPROTO_TCP) &&
 		(wDirection == FWP_DIRECTION_OUTBOUND) &&
 		(wRemotePort == HTTP_DEFAULT_PORT))
@@ -195,7 +197,7 @@ NTSTATUS WfpAddCallouts()
 		fwpmCallout.displayData.name = (wchar_t*)WFP_SAMPLE_ESTABLISHED_CALLOUT_DISPLAY_NAME;
 		fwpmCallout.displayData.description = (wchar_t*)WFP_SAMPLE_ESTABLISHED_CALLOUT_DISPLAY_NAME;
 		fwpmCallout.calloutKey = WFP_SAMPLE_ESTABLISHED_CALLOUT_V4_GUID;
-		fwpmCallout.applicableLayer = FWPM_LAYER_ALE_FLOW_ESTABLISHED_V4;
+		fwpmCallout.applicableLayer = FWPM_LAYER_ALE_FLOW_ESTABLISHED_V4;//指定分层，ALE分层中，WFP维护数据包状态，如连接状态等，本例分层代表连接建立
 		status = FwpmCalloutAdd(g_hEngine, &fwpmCallout, NULL, &g_uFwpmEstablishedCallOutId);
 		if (!NT_SUCCESS(status) && (status != STATUS_FWP_ALREADY_EXISTS))
 		{
@@ -224,7 +226,7 @@ NTSTATUS WfpAddSubLayer()
 	SubLayer.displayData.description = WFP_SAMPLE_SUB_LAYER_DISPLAY_NAME;
 	SubLayer.displayData.name = WFP_SAMPLE_SUB_LAYER_DISPLAY_NAME;
 	SubLayer.subLayerKey = WFP_SAMPLE_SUBLAYER_GUID;
-	SubLayer.weight = 65535;
+	SubLayer.weight = 65535;//为子层设置权重
 	if (g_hEngine != NULL)
 	{
 		nStatus = FwpmSubLayerAdd(g_hEngine, &SubLayer, NULL);
@@ -246,28 +248,29 @@ NTSTATUS WfpAddFilters()
 	NTSTATUS nStatus = STATUS_UNSUCCESSFUL;
 	do
 	{
-		FWPM_FILTER0 Filter = { 0 };
+		FWPM_FILTER Filter = { 0 };
 		FWPM_FILTER_CONDITION FilterCondition[1] = { 0 };
-		FWP_V4_ADDR_AND_MASK AddrAndMask = { 0 };
+		FWP_V4_ADDR_AND_MASK AddrAndMask = { 0 };//指定过滤IP和掩码
 		if (g_hEngine == NULL)
 		{
 			break;
 		}
+		//过滤器属性
 		Filter.displayData.description = WFP_SAMPLE_FILTER_ESTABLISH_DISPLAY_NAME;
 		Filter.displayData.name = WFP_SAMPLE_FILTER_ESTABLISH_DISPLAY_NAME;
 		Filter.flags = 0;
-		Filter.layerKey = FWPM_LAYER_ALE_FLOW_ESTABLISHED_V4;
-		Filter.subLayerKey = WFP_SAMPLE_SUBLAYER_GUID;
-		Filter.weight.type = FWP_EMPTY;
-		Filter.numFilterConditions = 1;
+		Filter.layerKey = FWPM_LAYER_ALE_FLOW_ESTABLISHED_V4;//设置分层
+		Filter.subLayerKey = WFP_SAMPLE_SUBLAYER_GUID;//绑定子层
+		Filter.weight.type = FWP_EMPTY;//指定权重为Empty，过滤引擎会自动为其分配一个权重
+		Filter.numFilterConditions = 1;//一个过滤条件
 		Filter.filterCondition = FilterCondition;
-		Filter.action.type = FWP_ACTION_CALLOUT_TERMINATING;
+		Filter.action.type = FWP_ACTION_CALLOUT_TERMINATING;//动作类型，标识与Callout接口关联，并且总是返回允许或者拦截
 		Filter.action.calloutKey = WFP_SAMPLE_ESTABLISHED_CALLOUT_V4_GUID;
-
-		FilterCondition[0].fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS;
-		FilterCondition[0].matchType = FWP_MATCH_EQUAL;
+		//过滤条件
+		FilterCondition[0].fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS;//表示检查远端IP
+		FilterCondition[0].matchType = FWP_MATCH_EQUAL;//指定匹配类型为相等
 		FilterCondition[0].conditionValue.type = FWP_V4_ADDR_MASK;
-		FilterCondition[0].conditionValue.v4AddrMask = &AddrAndMask;
+		FilterCondition[0].conditionValue.v4AddrMask = &AddrAndMask;//设置为0，表示所有数据包都去匹配这个过滤条件
 		nStatus = FwpmFilterAdd(g_hEngine, &Filter, NULL, &g_uEstablishedFilterId);
 		if (STATUS_SUCCESS != nStatus)
 		{
