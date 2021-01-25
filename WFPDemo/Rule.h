@@ -1,5 +1,8 @@
 #pragma once
 
+/**
+ * 用一个链表维护过滤规则
+ */
 #define WFP_TAG	'wfpT'
 
 #pragma pack(push)

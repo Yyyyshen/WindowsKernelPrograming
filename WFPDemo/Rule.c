@@ -9,6 +9,7 @@ KSPIN_LOCK  g_RuleLock = 0;
 
 BOOLEAN InitRuleInfo()
 {
+	//初始化链表及自旋锁
 	InitializeListHead(&g_WfpRuleList);
 	KeInitializeSpinLock(&g_RuleLock);
 	return TRUE;
@@ -46,6 +47,7 @@ BOOLEAN UninitRuleInfo()
 
 BOOLEAN AddNetRuleInfo(PVOID pBuf, ULONG uLen)
 {
+	//可根据应用层传来的信息导入规则
 	BOOLEAN bSucc = FALSE;
 	PST_WFP_NETINFO	pRuleInfo = NULL;
 	do
@@ -84,6 +86,7 @@ BOOLEAN AddNetRuleInfo(PVOID pBuf, ULONG uLen)
 
 BOOLEAN IsHitRule(USHORT uRemotePort)
 {
+	//遍历已有规则，若找到相同则拦截
 	BOOLEAN bIsHit = FALSE;
 	do
 	{

@@ -59,6 +59,8 @@ VOID NTAPI Wfp_Sample_Established_ClassifyFn_V4(
 	ULONG	ulSrcIPAddress = 0;
 	ULONG	ulRemoteIPAddress = 0;
 	CHAR szProtocalName[12] = { 0 };
+	UCHAR szProcessPath[256] = { 0 };
+	RtlZeroMemory(szProcessPath, 256);
 
 	if (!(classifyOut->rights & FWPS_RIGHT_ACTION_WRITE))
 	{
@@ -88,6 +90,13 @@ VOID NTAPI Wfp_Sample_Established_ClassifyFn_V4(
 
 	//获取进程ID
 	ULONG64 processId = inMetaValues->processId;
+
+	//获取进程路径
+	for (ULONG i = 0; i < inMetaValues->processPath->size; i++)
+	{
+		// 可通过此来限定指定进程名的网络访问
+		szProcessPath[i] = inMetaValues->processPath->data[i];
+	}
 
 	//输出一下
 	DbgPrint("Protocal=%s, Direction:%d, LocalIp=%u.%u.%u.%u:%d, RemoteIp=%u.%u.%u.%u:%d, IRQL=%d, PID=%I64d\n",
@@ -120,8 +129,7 @@ VOID NTAPI Wfp_Sample_Established_ClassifyFn_V4(
 	{
 		//TCP协议尝试发起80端口的访问，拦截(BLOCK)
 		classifyOut->actionType = FWP_ACTION_BLOCK;
-		//测试通过，也暂时没有蓝屏情况，回去看下另一个例子
-		//通过提供的丰富信息，可以做更多规则限定
+		//测试通过
 	}
 
 	//清除FWPS_RIGHT_ACTION_WRITE标记
