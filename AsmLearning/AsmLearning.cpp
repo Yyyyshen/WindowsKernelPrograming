@@ -11,18 +11,19 @@
  */
 
 int add(int a, int b);
+void myFunc();
 
 int main()
 {
 	int a = 1, b;
-	//b = a;
+	b = a;
 	//断点查看反汇编代码
 	//00A31D3F 8B 45 F4             mov         eax, dword ptr[a]
 	//00A31D42 89 45 E8             mov         dword ptr[b], eax
-	__asm {
-		mov eax, a
-		mov b, eax
-	}
+	//__asm {
+	//	mov eax, a
+	//	mov b, eax
+	//}
 
 	//x86处理器会认为esp保存的数据就是栈顶地址
 	//__asm push eax //这条指令会把esp减少4并把eax数据存入esp所指内存地址空间
@@ -96,6 +97,7 @@ int main()
 	//上面call 0FE1451h找到对应地址后，是如下语句，跳转到具体函数地址
 	//00FE1451 E9 AA 0A 00 00       jmp         add(0FE1F00h)
 
+	myFunc();
 
 	//最后，同一个值异或结果就是0
 	//xor eax,eax ;将eax清零并返回
@@ -146,3 +148,87 @@ int add(int a, int b)
  *
  * 使用stdcall或者fastcall时，ret指令后会跟一个参数总长度（例如上面add函数，最后会变成 ret 08h，用于实现平衡）
  */
+
+ /**
+  * 体系架构
+  *
+  * IA-32是Intel用于PC的常见架构，也就是x86，不同架构由不同的环境和指令，汇编语言也不同
+  * 还有arm等架构，以及IA-64（另一种架构，不是IA-32的扩展）
+  * 名字是IA-32，但实际上被扩展到支持64位系统，限制主流的IA-32处理器都是64位的
+  * 位数包括地址总线数目、通用寄存器位数以及一次操作所处理操作数长度等
+  * AMD64和Intel64都是扩展了IA-32架构的x64处理器
+  *
+  * IA-32中8个32位寄存器
+  * eax-edx（存数据），esi、edi（源和目标寄存器，串拷贝和移动指令等操作中使用），esp、ebp（用作堆栈指针和备份堆栈指针）
+  * 扩展到64位之后，数量、宽度增大一倍，有rax-rdx，rsi、rdi，rsp、rbp，r8-r15
+  * 但仍可以使用e开头寄存器，他们就是r开头寄存器的低32位
+  */
+  //上面add函数在64位下汇编实现如下：
+  //int add(int a, int b) //不同编译器上，对不同的数据类型会编译为不同位数
+  //{													//64位默认用了寄存器传参，不再支持_stdcall、_fastcall
+  //	00007FF785371810 89 54 24 10          mov         dword ptr[rsp + 10h], edx	//取参数，+10h说明参数还是在栈中留了位置，并没有节约空间，只是速度快些
+  //	00007FF785371814 89 4C 24 08          mov         dword ptr[rsp + 8], ecx	//对于微软编译器，int在64位平台还是32位的，所以还是用了e开头的寄存器
+  //	00007FF785371818 55                   push        rbp	//保存可能会更改的寄存器值
+  //	00007FF785371819 57                   push        rdi
+  //	00007FF78537181A 48 81 EC E8 00 00 00 sub         rsp, 0E8h
+  //	00007FF785371821 48 8D 6C 24 20       lea         rbp, [rsp + 20h]
+  //	00007FF785371826 48 8B FC             mov         rdi, rsp
+  //	00007FF785371829 B9 3A 00 00 00       mov         ecx, 3Ah	//开辟空间填充0xCC
+  //	00007FF78537182E B8 CC CC CC CC       mov         eax, 0CCCCCCCCh
+  //	00007FF785371833 F3 AB                rep stos    dword ptr[rdi]
+  //	00007FF785371835 8B 8C 24 08 01 00 00 mov         ecx, dword ptr[rsp + 108h]
+  //	00007FF78537183C 48 8D 0D E6 F7 00 00 lea         rcx, [__47EF6589_AsmLearning@cpp(07FF785381029h)]
+  //	00007FF785371843 E8 05 FB FF FF       call        __CheckForDebuggerJustMyCode(07FF78537134Dh)
+  //
+  //	return a + b;
+  //	00007FF785371848 8B 85 E8 00 00 00    mov         eax, dword ptr[b]
+  //	00007FF78537184E 8B 8D E0 00 00 00    mov         ecx, dword ptr[a]
+  //	00007FF785371854 03 C8                add         ecx, eax
+  //	00007FF785371856 8B C1                mov         eax, ecx	//使用64位数据类型的话，则会使用r开头寄存器操作，用rax返回
+  //}
+  //00007FF785371858 48 8D A5 C8 00 00 00 lea         rsp, [rbp + 0C8h]
+  //00007FF78537185F 5F                   pop         rdi
+  //00007FF785371860 5D                   pop         rbp
+  //00007FF785371861 C3                   ret		//调用方自己恢复栈空间
+
+  /**
+   * 栈空间的开辟与恢复
+   * 
+   * 一般来说，开辟栈空间为了保存局部变量
+   * 微软在生成x64代码时，使用sub rsp,n开辟足够栈空间，除了保存内部变量，也给自己调用的作为函数传递参数之用
+   * 这样参数可以直接用mov指令填写，最后一次性用add rsp,n恢复
+   * 
+   * 例如：
+   */
+void myFunc_1() {}
+void myFunc_2(int a,int b) {}
+void myFunc_3(int a, int b, int c) {}
+
+void myFunc()
+{
+	//00007FF664041CD0 40 55                push        rbp
+	//00007FF664041CD2 57                   push        rdi
+	//00007FF664041CD3 48 81 EC E8 00 00 00 sub         rsp, 0E8h
+	//00007FF664041CDA 48 8D 6C 24 20       lea         rbp, [rsp + 20h]
+	//00007FF664041CDF 48 8B FC             mov         rdi, rsp
+	//00007FF664041CE2 B9 3A 00 00 00       mov         ecx, 3Ah
+	//00007FF664041CE7 B8 CC CC CC CC       mov         eax, 0CCCCCCCCh
+	//00007FF664041CEC F3 AB                rep stos    dword ptr[rdi]
+	//00007FF664041CEE 48 8D 0D 34 F3 00 00 lea         rcx, [__47EF6589_AsmLearning@cpp(07FF664051029h)]
+	//00007FF664041CF5 E8 53 F6 FF FF       call        __CheckForDebuggerJustMyCode(07FF66404134Dh)
+	myFunc_1();
+	//00007FF664041CFA E8 B2 F6 FF FF       call        myFunc_1(07FF6640413B1h)
+	myFunc_2(1,2);
+	//00007FF664041CFF BA 02 00 00 00       mov         edx, 2
+	//00007FF664041D04 B9 01 00 00 00       mov         ecx, 1
+	//00007FF664041D09 E8 9E F6 FF FF       call        myFunc_2(07FF6640413ACh)
+	myFunc_3(1,2,3);
+	//00007FF664041D0E 41 B8 03 00 00 00    mov         r8d, 3
+	//00007FF664041D14 BA 02 00 00 00       mov         edx, 2
+	//00007FF664041D19 B9 01 00 00 00       mov         ecx, 1
+	//00007FF664041D1E E8 98 F6 FF FF       call        myFunc_3(07FF6640413BBh)
+}
+//00007FF664041D23 48 8D A5 C8 00 00 00 lea         rsp, [rbp + 0C8h]
+//00007FF664041D2A 5F                   pop         rdi
+//00007FF664041D2B 5D                   pop         rbp
+//00007FF664041D2C C3                   ret
