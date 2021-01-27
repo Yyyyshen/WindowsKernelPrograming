@@ -431,6 +431,9 @@ ndisprotCreateBinding(
     IN ULONG                                    BindingInfoLength
     )
 {
+    //绑定/解绑网卡函数本身并不复杂，但需要处理的过程十分繁琐
+    //因为网卡是随时插拔的，还要防止多线程竞争，
+    //所以要处理好同步
     NDIS_STATUS Status;
     NDIS_STATUS  OpenErrorCode;
     NDIS_MEDIUM  MediumArray[1] = {NdisMedium802_3};
@@ -442,7 +445,7 @@ ndisprotCreateBinding(
     ULONG GenericUlong = 0;
 
     // 输出一句调试信息。
-    DEBUGP(DL_LOUD, ("CreateBinding: open %p/%x, device [%ws]\n",
+    DEBUGP(DL_LOUD, ("CreateBinding: open %p/%x, device [%s]\n",
                 pOpenContext, pOpenContext->Flags, pBindingInfo));
     Status = NDIS_STATUS_SUCCESS;
 
@@ -492,7 +495,7 @@ ndisprotCreateBinding(
         NPROT_ALLOC_MEM(pOpenContext->DeviceName.Buffer, BindingInfoLength + sizeof(WCHAR));
         if (pOpenContext->DeviceName.Buffer == NULL)
         {
-            DEBUGP(DL_WARN, ("CreateBinding: failed to alloc device name buf (%d bytes)\n",
+            DEBUGP(DL_WARN, ("CreateBinding: failed to alloc device name buf (%lld bytes)\n",
                 BindingInfoLength + sizeof(WCHAR)));
             Status = NDIS_STATUS_RESOURCES;
             break;
@@ -520,7 +523,7 @@ ndisprotCreateBinding(
             break;
         }
 
-        // 分配包池，用来容纳
+        // 分配包池，用来容纳接收的包
         NdisAllocatePacketPoolEx(
             &Status,
             &pOpenContext->RecvPacketPool,

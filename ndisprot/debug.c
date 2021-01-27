@@ -16,7 +16,8 @@ Revision History:
 Notes:
 
 --*/
-
+#include <ndis.h>
+#include <ntddk.h>
 #include "precomp.h"
 
 #define __FILENUMBER 'GBED'
