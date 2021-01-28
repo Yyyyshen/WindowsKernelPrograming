@@ -21,6 +21,13 @@
   * 例子在随书代码sh_ssdt_hook.h，有汇编，需要32位编译
   */
 
+  /**
+   * 函数导出表挂钩
+   * 还有一些内核函数没有放到系统服务描述符表
+   * 保存原始地址，替换跳转指令，完成需要的处理后，再调用回原来的地址
+   * 例子挂钩IoCallDriver——xtbl_hook.h
+   */
+
 #include <ntddk.h>
 
 NTSTATUS DriverEntry(IN PDRIVER_OBJECT pDriverObject, IN PUNICODE_STRING pRegistryPath)

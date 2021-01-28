@@ -30,9 +30,15 @@
     <ClCompile Include="sh_ssdt_hook.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="xtbl_hook.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="sh_ssdt_hook.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="xtbl_hook.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

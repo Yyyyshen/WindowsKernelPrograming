@@ -157,9 +157,11 @@
   <ItemGroup>
     <ClCompile Include="HookWinApi.c" />
     <ClCompile Include="sh_ssdt_hook.c" />
+    <ClCompile Include="xtbl_hook.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="sh_ssdt_hook.h" />
+    <ClInclude Include="xtbl_hook.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
