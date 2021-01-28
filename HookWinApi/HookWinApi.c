@@ -28,6 +28,23 @@
    * 例子挂钩IoCallDriver——xtbl_hook.h
    */
 
+   /**
+	* 内联函数挂钩
+	* 动态解析函数开头几条指令，保存下来，跳转到自己的函数，最后执行保存下来的指令，跳转回原来的函数挂钩点
+	* 一般要使用到反汇编引擎处理指令
+	*/
+
+	/**
+	 * 中断和中断挂钩
+	 * 中断是CPU处理异常或特殊请求的过程
+	 * 中断描述符表IDT是很重要的数据结构
+	 * 在IA-32体系，IDTR寄存器48位（64位系统为80位）
+	 * 该寄存器0~15位记录IDT长度，16~47位记录IDT起始地址
+	 * IDT中最多容纳256个描述符，每个占8字节
+	 */
+
+	//有点看不下去了，先停一停
+
 #include <ntddk.h>
 
 NTSTATUS DriverEntry(IN PDRIVER_OBJECT pDriverObject, IN PUNICODE_STRING pRegistryPath)
