@@ -15,7 +15,9 @@
 
 // CWFPExecDlg 对话框
 
-
+/**
+ * 公司项目使用，暂时在新的repo里去写了，其实参照本方案中CoWorkUser来写就ok了
+ */
 
 CWFPExecDlg::CWFPExecDlg(CWnd* pParent /*=nullptr*/)
 	: CDialogEx(IDD_WFPEXEC_DIALOG, pParent)
