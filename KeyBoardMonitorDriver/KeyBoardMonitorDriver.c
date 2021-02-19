@@ -1,5 +1,7 @@
 #include <wdm.h>
+#include <ntddk.h>
 #include <ntddkbd.h>
+#include <windef.h>
 
 /**
  * 键盘输入监控
@@ -276,7 +278,7 @@ c2pReadComplete(
 	PIO_STACK_LOCATION IrpSp;
 	ULONG buf_len = 0;
 	PUCHAR buf = NULL;
-	size_t i,numKeys;
+	size_t i, numKeys;
 
 	//结构体中获取输入信息
 	PKEYBOARD_INPUT_DATA KeyData;
@@ -457,6 +459,136 @@ c2pUnload(PDRIVER_OBJECT DriverObject)
 }
 
 PDRIVER_OBJECT gDriverObject = NULL;
+
+
+/**
+ * HOOK分发函数
+ *
+ * 恶意程序很少会通过上面这种直接绑定虚拟设备的方式，因为很容易被发现
+ * 会采用修改驱动对象的分发函数指针来过滤请求，截获后再调用旧的函数，使后续流程正常运作
+ */
+NTSTATUS
+MyDispatch(
+	IN PDEVICE_OBJECT DeviceObject,
+	IN PIRP Irp
+)
+{
+	//做一些截获操作
+}
+NTSTATUS
+HookKbdclassDispatch(
+	IN PDRIVER_OBJECT DriverObject,
+	IN PUNICODE_STRING RegistryPath
+)
+{
+	NTSTATUS status = STATUS_SUCCESS;
+
+	UNICODE_STRING uniNtNameString;
+	PDRIVER_OBJECT KbdDriverObject = NULL;
+
+	RtlInitUnicodeString(&uniNtNameString, KBD_DRIVER_NAME);//初始化驱动名字符串
+	//通过驱动名打开对象
+	status = ObReferenceObjectByName(
+		&uniNtNameString,
+		OBJ_CASE_INSENSITIVE,
+		NULL,
+		0,
+		*IoDriverObjectType,
+		KernelMode,
+		NULL,
+		&KbdDriverObject
+	);
+	if (!NT_SUCCESS(status))
+	{
+		KdPrint(("Attach: open driver object by name failed."));
+		return status;
+	}
+
+	ObDereferenceObject(KbdDriverObject);//调用ObReferenceObjectByName会使驱动对象引用增加，需要解引用
+
+	//保存原有分发函数指针
+	ULONG i;
+	PDRIVER_DISPATCH OldDispatchFunctions[IRP_MJ_MAXIMUM_FUNCTION + 1];
+
+	for (i = 0; i <= IRP_MJ_MAXIMUM_FUNCTION; ++i)
+	{
+		OldDispatchFunctions[i] = KbdDriverObject->MajorFunction[i];
+		//进行原子交换操作，替换为自己的分发函数
+		InterlockedExchangePointer(&KbdDriverObject->MajorFunction[i], MyDispatch);
+	}
+
+	return status;
+}
+
+/**
+ * 类驱动下的端口驱动
+ *
+ * 替换分发函数指针的方法依然很明显
+ * 还有一个手段，是直接寻找一个用于端口驱动中读取输入缓冲区的函数（实际上是类驱动提供）
+ * 通过Hook该函数实现过滤
+ *
+ * KbdClass被称为键盘类驱动
+ * 类驱动通常指统管一类设备的驱动程序，在类驱动下和实际硬件交互的驱动被称为端口驱动
+ *
+ * 当键盘上一个键被按下时，产生一个MakeCode，引发键盘中断；松开时，产生一个BreakCode，引发中断
+ * 键盘中断导致键盘中断服务例程被执行，最终导致i8042prt的I8042KeyboardInterruptService被执行
+ * 从端口读出按键的扫描码，放在KEYBOARD_INPUT_DATA中，将此结构放入i8042prt的输入数据队列中，一个中断放一个数据
+ * 最终调用KeInsertQueueDpc，进行更多处理的延迟过程调用
+ *
+ * 如果找到了I8042KeyboardInterruptService中调用的类驱动的回调函数，就可以获取键盘输入了
+ * 关键在于定位函数指针：
+ *		函数指针应该保存在i8042prt生成的设备的自定义设备扩展中
+ *		函数开始地址应该在内核模块KbdClass中
+ *		内核模块KbdClass生成的一个设备对象指针也保存在设备扩展中，并且在要找的函数指针之前
+ */
+ //ps2的端口驱动
+#define PS2_DRIVER_NAME  L"\\Driver\\i8042prt"
+ //usb的端口驱动
+#define USB_DRIVER_NAME  L"\\Driver\\Kbdhid"
+NTSTATUS
+HookKbdclassPrtDriver(
+	IN PDRIVER_OBJECT DriverObject,
+	IN PUNICODE_STRING RegistryPath
+)
+{
+	NTSTATUS status = STATUS_SUCCESS;
+
+	UNICODE_STRING uniNtNameString;
+	PDRIVER_OBJECT KbdDriverObject = NULL;
+
+	RtlInitUnicodeString(&uniNtNameString, KBD_DRIVER_NAME);//初始化驱动名字符串
+	//通过驱动名打开对象
+	status = ObReferenceObjectByName(
+		&uniNtNameString,
+		OBJ_CASE_INSENSITIVE,
+		NULL,
+		0,
+		*IoDriverObjectType,
+		KernelMode,
+		NULL,
+		&KbdDriverObject
+	);
+	if (!NT_SUCCESS(status))
+	{
+		KdPrint(("Attach: open driver object by name failed."));
+		return status;
+	}
+
+	ObDereferenceObject(KbdDriverObject);//调用ObReferenceObjectByName会使驱动对象引用增加，需要解引用
+
+	//判断地址是否在KbdClass驱动中
+	PVOID address;
+	size_t kbdDriverStart = KbdDriverObject->DriverStart;
+	size_t kbdDriverSize = KbdDriverObject->DriverSize;
+
+	if ((address > kbdDriverStart) && (address < (PBYTE)kbdDriverStart + kbdDriverSize))
+	{
+		//满足条件说明在此驱动中
+	}
+
+	return status;
+}
+
 
 NTSTATUS DriverEntry(IN PDRIVER_OBJECT pDriverObject, IN PUNICODE_STRING pRegistryPath)
 {
