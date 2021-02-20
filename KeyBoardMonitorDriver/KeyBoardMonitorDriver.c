@@ -1,5 +1,5 @@
-#include <wdm.h>
 #include <ntddk.h>
+#include <wdm.h>
 #include <ntddkbd.h>
 #include <windef.h>
 
@@ -545,45 +545,181 @@ HookKbdclassDispatch(
 #define PS2_DRIVER_NAME  L"\\Driver\\i8042prt"
  //usb的端口驱动
 #define USB_DRIVER_NAME  L"\\Driver\\Kbdhid"
-NTSTATUS
-HookKbdclassPrtDriver(
-	IN PDRIVER_OBJECT DriverObject,
-	IN PUNICODE_STRING RegistryPath
+//要搜索的回调函数类型定义
+typedef VOID(_stdcall* KEYBOARDCLASSSERVIECALLBACK)(
+	IN PDEVICE_OBJECT DeviceObject,
+	IN PKEYBOARD_INPUT_DATA InputDataStart,
+	IN PKEYBOARD_INPUT_DATA InputDataEnd,
+	IN OUT PULONG InputDataConsumed
+	);
+//定义一个结构体以及全局变量接收搜索到的回调函数
+typedef struct _KBD_CALLBACK
+{
+	PDEVICE_OBJECT classDeviceObject;
+	KEYBOARDCLASSSERVIECALLBACK serviceCallBack;
+}KBD_CALLBACK, * PKBD_CALLBACK;
+KBD_CALLBACK gKbdCallBack = { 0 };
+//替换的函数
+VOID
+MyCallBackFunction(
+	PDEVICE_OBJECT DeviceObject,  //驱动对象
+	PKEYBOARD_INPUT_DATA InputDataStart,  //
+	PKEYBOARD_INPUT_DATA InputDataEnd,
+	PULONG InputDataConsumed
 )
 {
-	NTSTATUS status = STATUS_SUCCESS;
-
+	DbgPrint("keyup %d", InputDataStart->MakeCode);
+	DbgPrint("keydown %d", InputDataEnd->MakeCode);
+}
+//搜索回调函数
+NTSTATUS
+SearchServiceCallBack(IN PDRIVER_OBJECT DriverObject)
+{
+	NTSTATUS status = STATUS_UNSUCCESSFUL;
+	int i = 0;
 	UNICODE_STRING uniNtNameString;
+	PDEVICE_OBJECT pTargetDeviceObject = NULL;
 	PDRIVER_OBJECT KbdDriverObject = NULL;
+	PDRIVER_OBJECT KbdhidDriverObject = NULL;
+	PDRIVER_OBJECT Kbd8042DriverObject = NULL;
+	PDRIVER_OBJECT UsingDriverObject = NULL;
+	PDEVICE_OBJECT UsingDeviceObject = NULL;
+	PVOID KbdDriverStart = NULL;
+	ULONG KbdDriverSize = 0;
+	PVOID UsingDeviceExt = NULL;
+	PVOID* AddrServiceCallBack = 0;
 
-	RtlInitUnicodeString(&uniNtNameString, KBD_DRIVER_NAME);//初始化驱动名字符串
-	//通过驱动名打开对象
+	//打开USB类型键盘
+	RtlInitUnicodeString(&uniNtNameString, USB_DRIVER_NAME);
 	status = ObReferenceObjectByName(
 		&uniNtNameString,
 		OBJ_CASE_INSENSITIVE,
 		NULL,
 		0,
-		*IoDriverObjectType,
+		IoDriverObjectType,
+		KernelMode,
+		NULL,
+		&KbdhidDriverObject
+	);
+	if (!NT_SUCCESS(status))
+	{
+		DbgPrint(("Search: open usb keyboard failed."));
+	}
+	else
+	{
+		ObDereferenceObject(KbdhidDriverObject);
+	}
+	//打开PS/2类型键盘
+	RtlInitUnicodeString(&uniNtNameString, PS2_DRIVER_NAME);
+	status = ObReferenceObjectByName(
+		&uniNtNameString,
+		OBJ_CASE_INSENSITIVE,
+		NULL,
+		0,
+		IoDriverObjectType,
+		KernelMode,
+		NULL,
+		&Kbd8042DriverObject
+	);
+	if (!NT_SUCCESS(status))
+	{
+		DbgPrint(("Search: open ps/2 keyboard failed."));
+	}
+	else
+	{
+		ObDereferenceObject(Kbd8042DriverObject);
+	}
+	//同时存在或者都没找到，返回失败
+	if (Kbd8042DriverObject && KbdhidDriverObject)
+	{
+		return STATUS_UNSUCCESSFUL;
+	}
+	if (!KbdhidDriverObject && !Kbd8042DriverObject)
+	{
+		return STATUS_UNSUCCESSFUL;
+	}
+	//使用存在的对象
+	UsingDriverObject = Kbd8042DriverObject ? Kbd8042DriverObject : KbdhidDriverObject;
+	//找到该驱动对象下第一个设备对象
+	UsingDeviceObject = UsingDriverObject->DeviceObject;
+	//获取该设备对象的设备扩展，至此，该扩展中应该包含了要找的函数指针
+	UsingDeviceExt = UsingDeviceObject->DeviceExtension;
+	//则该地址就是在此扩展中保存的一个在类驱动KbdClass中的地址
+
+	//打开驱动KbdClass
+	RtlInitUnicodeString(&uniNtNameString, KBD_DRIVER_NAME);
+	status = ObReferenceObjectByName(
+		&uniNtNameString,
+		OBJ_CASE_INSENSITIVE,
+		NULL,
+		0,
+		IoDriverObjectType,
 		KernelMode,
 		NULL,
 		&KbdDriverObject
 	);
 	if (!NT_SUCCESS(status))
 	{
-		KdPrint(("Attach: open driver object by name failed."));
-		return status;
+		DbgPrint(("Search: open kbd driver failed."));
+		return STATUS_UNSUCCESSFUL;
+	}
+	else
+	{
+		ObDereferenceObject(KbdDriverObject);
+		//获得开始地址和大小
+		KbdDriverStart = KbdDriverObject->DriverStart;
+		KbdDriverSize = KbdDriverObject->DriverSize;
+	}
+	//遍历kbdclass下所有设备，在这些设备中，有一个会保存在端口驱动的设备扩展中
+	pTargetDeviceObject = KbdDriverObject->DeviceObject;
+	PBYTE DeviceExt;
+	while (pTargetDeviceObject)
+	{
+		DeviceExt = (PBYTE)UsingDeviceExt;
+		//遍历设备扩展下的每一个指针
+		for (; i < 4096; i++, DeviceExt += sizeof(PBYTE))
+		{
+			PVOID tmp;
+			if (!MmIsAddressValid(DeviceExt)) //ntddk.h在最前面声明，否则找不到
+			{
+				break;
+			}
+			//找到后会填写到全局变量中，所以这里检查是否已找到，找到直接跳出
+			if (gKbdCallBack.classDeviceObject && gKbdCallBack.serviceCallBack)
+			{
+				status = STATUS_SUCCESS;
+				break;
+			}
+			//端口驱动的设备扩展中，找到了类驱动的设备对象，记录下类驱动设备对象
+			tmp = *(PVOID*)DeviceExt;
+			if (tmp == pTargetDeviceObject)
+			{
+				gKbdCallBack.classDeviceObject = (PDEVICE_OBJECT)tmp;
+				DbgPrint(("classDeviceObject %8x\n", tmp));
+				continue;
+			}
+			//如果设备扩展中找到一个地址位于KbdClass驱动中，基本可以认为就是我们要找的回调函数地址
+			if (
+				(tmp > KbdDriverStart) &&
+				(tmp < (PBYTE)KbdDriverStart + KbdDriverSize) &&
+				MmIsAddressValid(tmp)
+				)
+			{
+				//记录下来
+				gKbdCallBack.serviceCallBack = (KEYBOARDCLASSSERVIECALLBACK)tmp;
+				AddrServiceCallBack = (PVOID*)DeviceExt;
+				DbgPrint(("serviceCallBack:%8x AddrServiceCallBack: %8x\n",tmp,AddrServiceCallBack));
+			}
+
+		}
+		pTargetDeviceObject = pTargetDeviceObject->NextDevice;//继续遍历下一个设备
 	}
 
-	ObDereferenceObject(KbdDriverObject);//调用ObReferenceObjectByName会使驱动对象引用增加，需要解引用
-
-	//判断地址是否在KbdClass驱动中
-	PVOID address;
-	size_t kbdDriverStart = KbdDriverObject->DriverStart;
-	size_t kbdDriverSize = KbdDriverObject->DriverSize;
-
-	if ((address > kbdDriverStart) && (address < (PBYTE)kbdDriverStart + kbdDriverSize))
+	//成功找到，替换为自己的回调函数，至此成功截获
+	if (AddrServiceCallBack && gKbdCallBack.serviceCallBack)
 	{
-		//满足条件说明在此驱动中
+		DbgPrint(("Hook KeyboardClassServiceCallback\n"));
+		*AddrServiceCallBack = MyCallBackFunction;
 	}
 
 	return status;
