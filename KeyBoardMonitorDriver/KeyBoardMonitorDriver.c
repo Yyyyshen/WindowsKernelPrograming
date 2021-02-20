@@ -708,7 +708,7 @@ SearchServiceCallBack(IN PDRIVER_OBJECT DriverObject)
 				//记录下来
 				gKbdCallBack.serviceCallBack = (KEYBOARDCLASSSERVIECALLBACK)tmp;
 				AddrServiceCallBack = (PVOID*)DeviceExt;
-				DbgPrint(("serviceCallBack:%8x AddrServiceCallBack: %8x\n",tmp,AddrServiceCallBack));
+				DbgPrint(("serviceCallBack:%8x AddrServiceCallBack: %8x\n", tmp, AddrServiceCallBack));
 			}
 
 		}
@@ -723,6 +723,169 @@ SearchServiceCallBack(IN PDRIVER_OBJECT DriverObject)
 	}
 
 	return status;
+}
+
+/**
+ * 通过键盘中断反过滤
+ *
+ * 再往端口驱动更底层走
+ * 针对PS/2键盘（32位系统下）
+ * 早期方案：当输入焦点移到密码框时，注册一个中断服务接管键盘中断，比如0x93
+ * 之后按键就不通过键盘驱动，而是完全由这个中断服务来处理扫描码并交给输入框
+ *
+ * 之前知道_asm int 3是一条中断指令（int n，其中n为中断号，可以触发软件中断，软件中断又叫异常）
+ * 触发的本质是使CPU暂停执行，并跳转到中断处理函数中，中断处理函数首地址保存在叫做IDT的表中
+ *
+ * 真正的硬件中断一般称为IRQ，某个IRQ来自什么硬件通常有明确规定，比如IRQ1就是PS/2键盘
+ * 一个IRQ一般需要一个中断处理函数处理，所以需要一个IRQ号到中断号的对应关系
+ * 在IOAIPC出现后，对应关系变得可以修改，在Windows上，PS/2键盘事件发生一般都是int 0x93
+ * 所以，修改int 0x93在IDT中保存的函数地址，修改为自己的函数，那么就能够先截获到这个中断
+ *
+ * 修改IDT
+ * 在内核程序中，可以修改IDT，IDT内存地址不定，但可以通过指令sidt获取
+ * 需要注意的是，在多核CPU上，每个核心都有自己的IDT，所以需要对每个核获取IDT，保证代码覆盖每个核
+ *
+ */
+ //必须明确一个域有多少位，所以预先定义几个明确知道长度的变量
+typedef unsigned char P2C_U8;
+typedef unsigned short P2C_U16;
+typedef unsigned long P2C_U32;
+//通过sidt指令会得到如下结构体，注意1字节对齐
+#pragma pack(push,1)
+typedef struct P2C_IDTR_
+{
+	P2C_U16 limit;//范围
+	P2C_U32 base;//基地址
+}P2C_IDTR, * PP2C_IDTR;
+#pragma  pack(pop)
+//用指令读出结构体，并返回IDT地址
+void* p2cGetIdt()
+{
+	P2C_IDTR idtr;
+	_asm sidt idtr //汇编指令获取IDT位置
+	return (void*)idtr.base;
+}
+//获取IDT地址后，该内存空间是一个数组，每个元素为如下结构
+#pragma pack(push,1)
+typedef struct P2C_IDT_ENTRY_
+{
+	P2C_U16 offset_low;
+	P2C_U16 selector;
+	P2C_U8 reserved;
+	P2C_U8 type : 4;			   //带冒号的域为位域
+	P2C_U8 always0 : 1;			   //表示成员宽度少于1字节，冒号后数字表示具体位数
+	P2C_U8 dpl : 2;				   //这里四个成员各占4/1/2/1位
+	P2C_U8 present : 1;			   //实际占空间位1字节
+	P2C_U16 offset_high;
+}P2C_IDT_ENTRY, * PP2C_IDT_ENTRY;
+#pragma  pack(pop)
+//写一个函数替换中断服务地址，并在执行后跳转回原有中断函数
+void* g_p2c_old;//记录原中断服务函数
+__declspec(naked)/*修饰一个裸函数，MS的C编译器不会再生成函数框架指令*/ p2cInterruptProc()
+{
+	__asm
+	{
+		pushad					//保存所有寄存器状态
+		pushfd					//
+		call p2cUserFilter		//调用自己的函数
+
+		popfd					//恢复所有寄存器
+		popad					//
+		jmp g_p2c_old			//跳转回原来的中断服务程序
+	}
+}
+//宏处理，便于取数据高低字节部分，或者从高低字节部分组合数据
+#define P2C_MAKELONG(low,high) \
+((P2C_U32)(((P2C_U16)((P2C_U32)(low) & 0xffff)) | \
+((P2C_U32)((P2C_U16)((P2C_U32)(high) & 0xffff))) << 16))
+#define P2C_LOW16_OF_32(data) \
+((P2C_U16)(((P2C_U32)data) & 0xffff))
+#define P2C_HIGH16_OF_32(data) \
+((P2C_U16)(((P2C_U32)data) >> 16))
+//修改IDT表中第0x93项，修改为p2cInterruptProc
+void p2cHookInt93(BOOLEAN hook_or_unhook)
+{
+	PP2C_IDT_ENTRY idt_addr = (PP2C_IDT_ENTRY)p2cGetIdt();
+	idt_addr += 0x93;
+	if (hook_or_unhook)
+	{
+		//记录原中断函数地址
+		g_p2c_old = (void*)P2C_MAKELONG(idt_addr->offset_low, idt_addr->offset_high);
+		//替换为p2cInterruptProc
+		idt_addr->offset_low = P2C_LOW16_OF_32(p2cInterruptProc);
+		idt_addr->offset_high = P2C_HIGH16_OF_32(p2cInterruptProc);
+	}
+	else
+	{
+		//取消hook
+		idt_addr->offset_low = P2C_LOW16_OF_32(g_p2c_old);
+		idt_addr->offset_high = P2C_HIGH16_OF_32(g_p2c_old);
+	}
+}
+
+/**
+ * 上面方法设置的是0x93中断号
+ * 实际上由于这个中断号对应关系可以被设置，应使用HalGetInterruptVector来获取这个中断号，然后及逆行替换
+ * （就是早期QQ的PS/2反过滤措施）
+ *
+ * 还可以更加底层，直接用端口操作键盘
+ * PS/2键盘数据端口为0x60，直接读取端口就能读到数据（前提是键盘必须处于可读状态)
+ * 驱动中没有对端口读取进行限制，直接用汇编就可以读取，一次读取一字节
+ */
+#define OBUFFER_FULL 0x02
+#define IBUFFER_FULL 0x01
+ //等待到键盘可读
+ULONG p2cWaitForKbRead()
+{
+	int i = 100;
+	P2C_U8 mychar;//一个字节等待读取
+	do
+	{
+		_asm in al, 0x64	//读取键盘命令端口
+		_asm mov mychar, al
+		KeStallExecutionProcessor(50);
+		if (!(mychar & OBUFFER_FULL)) break; //验证是否有对应标志
+	} while (i--);
+	if (i)	return TRUE;
+	return FALSE;
+}
+//等待到键盘可写
+ULONG p2cWaitForKbWrite()
+{
+	int i = 100;
+	P2C_U8 mychar;//一个字节等待读取
+	do
+	{
+		_asm in al, 0x64
+		_asm mov mychar, al
+		KeStallExecutionProcessor(50);
+		if (!(mychar & IBUFFER_FULL)) break;
+	} while (i--);
+	if (i)	return TRUE;
+	return FALSE;
+}
+//从端口操作键盘
+void p2cUserFilter()
+{
+	static P2C_U8 sch_pre = 0;
+	P2C_U8 sch;
+	//可读时获取端口中的扫描码
+	p2cWaitForKbRead();
+	_asm in al, 0x60 //读取键盘端口
+	_asm mov sch, al
+	//把读到的数据写回端口，以便其他程序正常读取（如果不想被读取，可以随便写一个数据）
+	if (sch_pre != sch)
+	{
+		sch_pre = sch;
+		_asm mov al, 0xd2
+		_asm out 0x64, al
+		p2cWaitForKbWrite();
+		_asm mov al, sch
+		_asm out 0x60, al
+	}
+	//扫描码读出后，键盘数据端口中就没有这个值了， 调用旧的中断处理也就没了意义，所以又写回了端口中
+	//但写回键盘时同样是触发中断，再次进入中断处理函数，引起死循环
+	//解决方法就是使用一个静态变量sch_pre记录前一次的值，如果是这个值，就跳过
 }
 
 
