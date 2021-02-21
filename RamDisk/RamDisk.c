@@ -257,56 +257,55 @@ NTSTATUS
 RamDiskFormatDisk(
 	IN PDEVICE_EXTENSION devExt
 )
-
-/*++
-
-Routine Description:
-
-	This routine formats the new disk.
-
-
-Arguments:
-
-	DeviceObject - Supplies a pointer to the device object that represents
-				   the device whose capacity is to be read.
-
-Return Value:
-
-	status is returned.
-
---*/
+/**
+ * 格式化磁盘为FAT12/16
+ * 
+ * 磁盘特性相关：
+ * 扇区是读写的基本单位，硬盘物理设计上，一次最少读写一个扇区（一般为512字节）
+ * 盘面上被分为多个同心圆，即多个磁道，每个磁道被划分为同样数目的扇区
+ * 多个盘面相同位置的磁道组成了一个柱面，柱面越多磁道越细
+ * 这些都属于物理结构
+ * 
+ * 操作系统对磁盘管理是一种逻辑上的结构，通过文件系统来实现
+ * 微软的文件系统包括：FAT12、FAT16、FAT32、NTFS等
+ * 
+ * 在FAT12/16系统中：
+ * MBR（主引导记录）位于整个磁盘的第一个扇区，大小为一个扇区大小
+ * 起始处为一段程序，在BIOS代码执行到最后时，会将这段程序加载到内存中执行
+ * 程序后面时一个硬盘分区表，记录分区信息
+ * 本驱动例子只建立一个可用磁盘卷，并不要求引导，所以不存在MBR部分
+ * DBR（操作系统引导记录）存在于MBR分区表中记录的起始位置指向的第一个扇区
+ * 包含了有效的引导程序、厂商标志、描述数据区等
+ * 最开始是一个跳转指令，跳转位置为引导程序处；厂商标志位OEM串；数据描述区称为BPB数据块，记录了分区的信息
+ * 在文件系统驱动操作任何一个磁盘卷时，DBR信息将被读取
+ * FAT（文件分配表）位于DBR之后，一式两份形式连续保存，是一个链表，每个表项编号都是一个簇
+ * 第0和第1项时保留的，从第2项开始用来记录某个文件所在位置
+ * FAT是多个链表集合体，其中每个链代表一个文件，链的起始点如何确定
+ * 要用到根目录入口点，多个根目录入口点形成一个表，表紧跟FAT表存储，表的每一项代表根目录下的一个文件或目录，记录了很多信息
+ */
 {
-	//磁盘卷初始化操作
 
-	PBOOT_SECTOR bootSector = (PBOOT_SECTOR)devExt->DiskImage;
-	PUCHAR       firstFatSector;
-	ULONG        rootDirEntries;
-	ULONG        sectorsPerCluster;
-	USHORT       fatType;        // Type FAT 12 or 16
-	USHORT       fatEntries;     // Number of cluster entries in FAT
-	USHORT       fatSectorCnt;   // Number of sectors for FAT
-	PDIR_ENTRY   rootDir;        // Pointer to first entry in root dir
+	PBOOT_SECTOR bootSector = (PBOOT_SECTOR)devExt->DiskImage; //指向磁盘启动扇区的指针
+	PUCHAR       firstFatSector;//指向第一个FAT表指针
+	ULONG        rootDirEntries;//记录根目录入口点数量
+	ULONG        sectorsPerCluster;//记录每个簇有多少扇区
+	USHORT       fatType;        //FAT文件系统类型
+	USHORT       fatEntries;     //记录FAT表里有多少表项
+	USHORT       fatSectorCnt;   //也给FAT表需要占用多少扇区
+	PDIR_ENTRY   rootDir;        //指向第一个根目录入口点
 
-	PAGED_CODE();
-	ASSERT(sizeof(BOOT_SECTOR) == 512);
-	ASSERT(devExt->DiskImage != NULL);
-
+	PAGED_CODE();//确认可以存取分页内存
+	ASSERT(sizeof(BOOT_SECTOR) == 512);//确认盘引导扇区大小为512
+	ASSERT(devExt->DiskImage != NULL);//确认操作的磁盘镜像可用
+	//用0填充磁盘，即清空
 	RtlZeroMemory(devExt->DiskImage, devExt->DiskRegInfo.DiskSize);
-
+	//定义磁盘属性
 	devExt->DiskGeometry.BytesPerSector = 512;
 	devExt->DiskGeometry.SectorsPerTrack = 32;     // Using Ramdisk value
 	devExt->DiskGeometry.TracksPerCylinder = 2;    // Using Ramdisk value
-
-	//
-	// Calculate number of cylinders.
-	//
-
+	//计算柱面数
 	devExt->DiskGeometry.Cylinders.QuadPart = devExt->DiskRegInfo.DiskSize / 512 / 32 / 2;
-
-	//
-	// Our media type is RAMDISK_MEDIA_TYPE
-	//
-
+	//磁盘介质类型
 	devExt->DiskGeometry.MediaType = RAMDISK_MEDIA_TYPE;
 
 	KdPrint((
@@ -314,16 +313,13 @@ Return Value:
 		devExt->DiskGeometry.Cylinders.QuadPart, devExt->DiskGeometry.TracksPerCylinder,
 		devExt->DiskGeometry.SectorsPerTrack, devExt->DiskGeometry.BytesPerSector
 		));
-
+	//根据用户指定的值对根目录项的数目进行初始化
 	rootDirEntries = devExt->DiskRegInfo.RootDirEntries;
+	//根据用户指定的值对每个簇有多少个扇区进行初始化
 	sectorsPerCluster = devExt->DiskRegInfo.SectorsPerCluster;
-
-	//
-	// Round Root Directory entries up if necessary
-	//
-
+	//根目录入口点只是用32各字节，但最少占用一个扇区
 	if (rootDirEntries & (DIR_ENTRIES_PER_SECTOR - 1)) {
-
+		//用户指定数目不合适时修正，使扇区空间充分利用
 		rootDirEntries =
 			(rootDirEntries + (DIR_ENTRIES_PER_SECTOR - 1)) &
 			~(DIR_ENTRIES_PER_SECTOR - 1);
@@ -333,20 +329,11 @@ Return Value:
 		"Root dir entries: %ld\n Sectors/cluster: %ld\n",
 		rootDirEntries, sectorsPerCluster
 		));
-
-	//
-	// We need to have the 0xeb and 0x90 since this is one of the
-	// checks the file system recognizer uses
-	//
-
+	//对开始的跳转指令成员填入硬编码指令
 	bootSector->bsJump[0] = 0xeb;
 	bootSector->bsJump[1] = 0x3c;
 	bootSector->bsJump[2] = 0x90;
-
-	//
-	// Set OemName to "RajuRam "
-	// NOTE: Fill all 8 characters, eg. sizeof(bootSector->bsOemName);
-	//
+	//OEM成员名称
 	bootSector->bsOemName[0] = 'R';
 	bootSector->bsOemName[1] = 'a';
 	bootSector->bsOemName[2] = 'j';
@@ -355,33 +342,25 @@ Return Value:
 	bootSector->bsOemName[5] = 'a';
 	bootSector->bsOemName[6] = 'm';
 	bootSector->bsOemName[7] = ' ';
-
+	//每个扇区多少个字节，取自初始化的磁盘信息数据结构
 	bootSector->bsBytesPerSec = (SHORT)devExt->DiskGeometry.BytesPerSector;
-	bootSector->bsResSectors = 1;
-	bootSector->bsFATs = 1;
-	bootSector->bsRootDirEnts = (USHORT)rootDirEntries;
-
+	bootSector->bsResSectors = 1;//只有一个保留扇区，即DBR本身
+	bootSector->bsFATs = 1;//只存放一份FAT表
+	bootSector->bsRootDirEnts = (USHORT)rootDirEntries;//程序入口点，由之前的计算得出
+	//磁盘总扇区数由磁盘大小和每个扇区大小计算得到
 	bootSector->bsSectors = (USHORT)(devExt->DiskRegInfo.DiskSize /
 		devExt->DiskGeometry.BytesPerSector);
-	bootSector->bsMedia = (UCHAR)devExt->DiskGeometry.MediaType;
-	bootSector->bsSecPerClus = (UCHAR)sectorsPerCluster;
-
-	//
-	// Calculate number of sectors required for FAT
-	//
-
+	bootSector->bsMedia = (UCHAR)devExt->DiskGeometry.MediaType;//介质类型由初始化信息得到
+	bootSector->bsSecPerClus = (UCHAR)sectorsPerCluster;//每个簇的扇区数，由之前计算得到
+	//FAT表的表项数目使总扇区减去保留扇区数，再减去根目录入口点所占用的扇区数，之后除以每簇扇区数，最终结果+2是由于第0和第1项保留
 	fatEntries =
 		(bootSector->bsSectors - bootSector->bsResSectors -
 			bootSector->bsRootDirEnts / DIR_ENTRIES_PER_SECTOR) /
 		bootSector->bsSecPerClus + 2;
-
-	//
-	// Choose between 12 and 16 bit FAT based on number of clusters we
-	// need to map
-	//
-
+	//表项数目决定了文件系统类型
 	if (fatEntries > 4087) {
 		fatType = 16;
+		//修正
 		fatSectorCnt = (fatEntries * 2 + 511) / 512;
 		fatEntries = fatEntries + fatSectorCnt;
 		fatSectorCnt = (fatEntries * 2 + 511) / 512;
@@ -392,17 +371,13 @@ Return Value:
 		fatEntries = fatEntries + fatSectorCnt;
 		fatSectorCnt = (((fatEntries * 3 + 1) / 2) + 511) / 512;
 	}
-
+	//初始化FAT表所占分区数
 	bootSector->bsFATsecs = fatSectorCnt;
-	bootSector->bsSecPerTrack = (USHORT)devExt->DiskGeometry.SectorsPerTrack;
-	bootSector->bsHeads = (USHORT)devExt->DiskGeometry.TracksPerCylinder;
-	bootSector->bsBootSignature = 0x29;
-	bootSector->bsVolumeID = 0x12345678;
-
-	//
-	// Set Label to "RamDisk    "
-	// NOTE: Fill all 11 characters, eg. sizeof(bootSector->bsLabel);
-	//
+	bootSector->bsSecPerTrack = (USHORT)devExt->DiskGeometry.SectorsPerTrack;//初始化DBR中每个磁道扇区数
+	bootSector->bsHeads = (USHORT)devExt->DiskGeometry.TracksPerCylinder;//初始化磁头数
+	bootSector->bsBootSignature = 0x29;//初始化启动签名
+	bootSector->bsVolumeID = 0x12345678;//随便写一个卷ID
+	//设置卷标
 	bootSector->bsLabel[0] = 'R';
 	bootSector->bsLabel[1] = 'a';
 	bootSector->bsLabel[2] = 'm';
@@ -414,11 +389,7 @@ Return Value:
 	bootSector->bsLabel[8] = ' ';
 	bootSector->bsLabel[9] = ' ';
 	bootSector->bsLabel[10] = ' ';
-
-	//
-	// Set FileSystemType to "FAT1?   "
-	// NOTE: Fill all 8 characters, eg. sizeof(bootSector->bsFileSystemType);
-	//
+	//根据之前计算结果填写文件系统类型
 	bootSector->bsFileSystemType[0] = 'F';
 	bootSector->bsFileSystemType[1] = 'A';
 	bootSector->bsFileSystemType[2] = 'T';
@@ -427,34 +398,23 @@ Return Value:
 	bootSector->bsFileSystemType[5] = ' ';
 	bootSector->bsFileSystemType[6] = ' ';
 	bootSector->bsFileSystemType[7] = ' ';
-
 	bootSector->bsFileSystemType[4] = (fatType == 16) ? '6' : '2';
-
+	//签署DBR最后标志位0x55AA
 	bootSector->bsSig2[0] = 0x55;
 	bootSector->bsSig2[1] = 0xAA;
-
-	//
-	// The FAT is located immediately following the boot sector.
-	//
-
+	//定位到FAT表起始点，定位方式利用了DBR只有一个扇区这一条件
 	firstFatSector = (PUCHAR)(bootSector + 1);
+	//填写介质标识
 	firstFatSector[0] = (UCHAR)devExt->DiskGeometry.MediaType;
 	firstFatSector[1] = 0xFF;
 	firstFatSector[2] = 0xFF;
-
+	//如果是FAT16，每个表项为4字节
 	if (fatType == 16) {
 		firstFatSector[3] = 0xFF;
 	}
-
-	//
-	// The Root Directory follows the FAT
-	//
+	//入口点紧跟FAT表，所以容易定位
 	rootDir = (PDIR_ENTRY)(bootSector + 1 + fatSectorCnt);
-
-	//
-	// Set device name to "MS-RAMDR"
-	// NOTE: Fill all 8 characters, eg. sizeof(rootDir->deName);
-	//
+	//填入卷标
 	rootDir->deName[0] = 'M';
 	rootDir->deName[1] = 'S';
 	rootDir->deName[2] = '-';
@@ -464,16 +424,12 @@ Return Value:
 	rootDir->deName[6] = 'D';
 	rootDir->deName[7] = 'R';
 
-	//
-	// Set device extension name to "IVE"
-	// NOTE: Fill all 3 characters, eg. sizeof(rootDir->deExtension);
-	//
 	rootDir->deExtension[0] = 'I';
 	rootDir->deExtension[1] = 'V';
 	rootDir->deExtension[2] = 'E';
-
+	//入口点属性设置为卷标属性
 	rootDir->deAttributes = DIR_ATTR_VOLUME;
-
+	//格式化完毕
 	return STATUS_SUCCESS;
 }
 
