@@ -52,14 +52,145 @@ typedef struct _QUEUE_EXTENSION {
 } QUEUE_EXTENSION, * PQUEUE_EXTENSION;
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(QUEUE_EXTENSION, QueueGetExtension)
 
+
+#pragma pack(1)
+
+typedef struct  _BOOT_SECTOR
+{
+	UCHAR       bsJump[3];          // x86 jmp instruction, checked by FS
+	CCHAR       bsOemName[8];       // OEM name of formatter
+	USHORT      bsBytesPerSec;      // Bytes per Sector
+	UCHAR       bsSecPerClus;       // Sectors per Cluster
+	USHORT      bsResSectors;       // Reserved Sectors
+	UCHAR       bsFATs;             // Number of FATs - we always use 1
+	USHORT      bsRootDirEnts;      // Number of Root Dir Entries
+	USHORT      bsSectors;          // Number of Sectors
+	UCHAR       bsMedia;            // Media type - we use RAMDISK_MEDIA_TYPE
+	USHORT      bsFATsecs;          // Number of FAT sectors
+	USHORT      bsSecPerTrack;      // Sectors per Track - we use 32
+	USHORT      bsHeads;            // Number of Heads - we use 2
+	ULONG       bsHiddenSecs;       // Hidden Sectors - we set to 0
+	ULONG       bsHugeSectors;      // Number of Sectors if > 32 MB size
+	UCHAR       bsDriveNumber;      // Drive Number - not used
+	UCHAR       bsReserved1;        // Reserved
+	UCHAR       bsBootSignature;    // New Format Boot Signature - 0x29
+	ULONG       bsVolumeID;         // VolumeID - set to 0x12345678
+	CCHAR       bsLabel[11];        // Label - set to RamDisk
+	CCHAR       bsFileSystemType[8];// File System Type - FAT12 or FAT16
+	CCHAR       bsReserved2[448];   // Reserved
+	UCHAR       bsSig2[2];          // Originial Boot Signature - 0x55, 0xAA
+}   BOOT_SECTOR, * PBOOT_SECTOR;
+
+typedef struct  _DIR_ENTRY
+{
+	UCHAR       deName[8];          // File Name
+	UCHAR       deExtension[3];     // File Extension
+	UCHAR       deAttributes;       // File Attributes
+	UCHAR       deReserved;         // Reserved
+	USHORT      deTime;             // File Time
+	USHORT      deDate;             // File Date
+	USHORT      deStartCluster;     // First Cluster of file
+	ULONG       deFileSize;         // File Length
+}   DIR_ENTRY, * PDIR_ENTRY;
+
+#pragma pack()
+
+#define DIR_ATTR_READONLY   0x01
+#define DIR_ATTR_HIDDEN     0x02
+#define DIR_ATTR_SYSTEM     0x04
+#define DIR_ATTR_VOLUME     0x08
+#define DIR_ATTR_DIRECTORY  0x10
+#define DIR_ATTR_ARCHIVE    0x20
+
 VOID
 RamDiskEvtDeviceContextCleanup(
 	IN WDFDEVICE Device
 )
-{
+/*++
 
+Routine Description:
+
+   EvtDeviceContextCleanup event callback cleans up anything done in
+   EvtDeviceAdd, except those things that are automatically cleaned
+   up by the Framework.
+
+   In the case of this sample, everything is automatically handled.  In a
+   driver derived from this sample, it's quite likely that this function could
+   be deleted.
+
+Arguments:
+
+	Device - Handle to a framework device object.
+
+Return Value:
+
+	VOID
+
+--*/
+{
+	PDEVICE_EXTENSION pDeviceExtension = DeviceGetExtension(Device);
+
+	PAGED_CODE();
+
+	if (pDeviceExtension->DiskImage) {
+		ExFreePool(pDeviceExtension->DiskImage);
+	}
 }
 
+BOOLEAN
+RamDiskCheckParameters(
+	IN PDEVICE_EXTENSION devExt,
+	IN LARGE_INTEGER ByteOffset,
+	IN size_t Length
+)
+
+{
+	//
+	// Check for invalid parameters.  It is an error for the starting offset
+	// + length to go past the end of the buffer, or for the length to
+	// not be a proper multiple of the sector size.
+	//
+	// Others are possible, but we don't check them since we trust the
+	// file system.
+	//
+
+	if (devExt->DiskRegInfo.DiskSize < Length ||
+		ByteOffset.QuadPart < 0 || // QuadPart is signed so check for negative values
+		((ULONGLONG)ByteOffset.QuadPart > (devExt->DiskRegInfo.DiskSize - Length)) ||
+		(Length & (devExt->DiskGeometry.BytesPerSector - 1))) {
+
+		//
+		// Do not give an I/O boost for parameter errors.
+		//
+
+		KdPrint((
+			"Error invalid parameter\n"
+			"ByteOffset: %x\n"
+			"Length: %d\n",
+			ByteOffset,
+			Length
+			));
+
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/**
+ * 对关注的请求进行自定义回调
+ * 回调函数中需要做以下操作的一种：
+ * 重新排队，可以将请求放入另一个队列
+ * 完成请求，对请求做一些处理后完成它
+ * 撤销请求，回调函数可以要求撤销该请求
+ * 转发请求，可以转发给其他设备
+ * 不能忽略该请求
+ *
+ * 这个例子中大多是对请求做处理后完成请求
+ * 由RamDiskEvtDeviceAdd函数中做的处理，可以很方便的通过队列对象获取到设备扩展，进而获取所有相关参数
+ * 缓冲区由系统提供，负责存放读出的数据或者要写入的数据
+ * 获取相应参数后，只需要在内存镜像中适当地点和长度读取或写入即可
+ */
 VOID
 RamDiskEvtIoDeviceControl(
 	IN WDFQUEUE Queue,
@@ -68,8 +199,95 @@ RamDiskEvtIoDeviceControl(
 	IN size_t InputBufferLength,
 	IN ULONG IoControlCode
 )
+/*++
+
+Routine Description:
+	处理一些必要的控制请求
+	This event is called when the framework receives IRP_MJ_DEVICE_CONTROL
+	requests from the system.
+
+Arguments:
+
+	Queue - Handle to the framework queue object that is associated
+			with the I/O request.
+	Request - Handle to a framework request object.
+
+	OutputBufferLength - length of the request's output buffer,
+						if an output buffer is available.
+	InputBufferLength - length of the request's input buffer,
+						if an input buffer is available.
+
+	IoControlCode - the driver-defined or system-defined I/O control code
+					(IOCTL) that is associated with the request.
+
+
+Return Value:
+
+	VOID
+
+--*/
 {
 
+	NTSTATUS          Status = STATUS_INVALID_DEVICE_REQUEST;
+	ULONG_PTR         information = 0;//存放返回的DeviceIoControl所需要的数据长度
+	size_t            bufSize;
+	PDEVICE_EXTENSION devExt = QueueGetExtension(Queue)->DeviceExtension;//通过队列对象获取设备扩展
+	//由于是标准的Windows请求，所以可以不担心长度问题
+	UNREFERENCED_PARAMETER(OutputBufferLength);
+	UNREFERENCED_PARAMETER(InputBufferLength);
+	//判断请求类型，一般磁盘卷都需要支持大量控制请求，这个例子的作者根据经验总结了一些必要的处理
+	switch (IoControlCode) {
+		//获取当前分区信息的请求
+	case IOCTL_DISK_GET_PARTITION_INFO:
+	{
+		//声明一个输出缓冲区指针
+		PPARTITION_INFORMATION outputBuffer;
+		PBOOT_SECTOR bootSector = (PBOOT_SECTOR)devExt->DiskImage;//所需信息大部分由DBR中获取，所以需要个DBR指针
+		//返回信息的长度，会被上层发出请求的设备收到
+		information = sizeof(PARTITION_INFORMATION);
+		//通过框架函数获取这个请求携带的输出缓冲区
+		Status = WdfRequestRetrieveOutputBuffer(Request, sizeof(PARTITION_INFORMATION), &outputBuffer, &bufSize);
+		if (NT_SUCCESS(Status)) {
+			//获取缓冲区成功，将相关信息填入
+			outputBuffer->PartitionType = (bootSector->bsFileSystemType[4] == '6') ? PARTITION_FAT_16 : PARTITION_FAT_12;
+			outputBuffer->BootIndicator = FALSE;
+			outputBuffer->RecognizedPartition = TRUE;
+			outputBuffer->RewritePartition = FALSE;
+			outputBuffer->StartingOffset.QuadPart = 0;
+			outputBuffer->PartitionLength.QuadPart = devExt->DiskRegInfo.DiskSize;
+			outputBuffer->HiddenSectors = (ULONG)(1L);
+			outputBuffer->PartitionNumber = (ULONG)(-1L);
+
+			Status = STATUS_SUCCESS;
+		}
+		break;
+	}
+
+	//向缓冲区填写磁盘信息
+	case IOCTL_DISK_GET_DRIVE_GEOMETRY:
+	{
+
+		PDISK_GEOMETRY outputBuffer;
+
+		information = sizeof(DISK_GEOMETRY);
+
+		Status = WdfRequestRetrieveOutputBuffer(Request, sizeof(DISK_GEOMETRY), &outputBuffer, &bufSize);
+		if (NT_SUCCESS(Status)) {
+
+			RtlCopyMemory(outputBuffer, &(devExt->DiskGeometry), sizeof(DISK_GEOMETRY));
+			Status = STATUS_SUCCESS;
+		}
+
+		break;
+	}
+	//验证可用和可写，直接返回成功，不需要其他信息
+	case IOCTL_DISK_CHECK_VERIFY:
+	case IOCTL_DISK_IS_WRITABLE:
+		Status = STATUS_SUCCESS;
+		break;
+	}
+	//完成请求
+	WdfRequestCompleteWithInformation(Request, Status, information);
 }
 
 VOID
@@ -79,7 +297,32 @@ RamDiskEvtIoRead(
 	IN size_t Length
 )
 {
-
+	//通过队列获取设备扩展
+	PDEVICE_EXTENSION      devExt = QueueGetExtension(Queue)->DeviceExtension;
+	NTSTATUS               Status = STATUS_INVALID_PARAMETER;
+	WDF_REQUEST_PARAMETERS Parameters;//用于获取请求参数的变量
+	LARGE_INTEGER          ByteOffset;//用于获取起始地址变量
+	WDFMEMORY              hMemory;//缓冲区内存句柄
+	//初始化参数变量
+	WDF_REQUEST_PARAMETERS_INIT(&Parameters);
+	//从请求参数中获取信息
+	WdfRequestGetParameters(Request, &Parameters);
+	//从请求参数中读出起始位置
+	ByteOffset.QuadPart = Parameters.Parameters.Read.DeviceOffset;
+	//检查参数；由于读取范围不能超过磁盘镜像大小，且必须扇区对齐，所以需要检查，若失败则将请求以错误参数结果返回
+	if (RamDiskCheckParameters(devExt, ByteOffset, Length)) {
+		//从请求参数中读取缓冲区的内存句柄
+		Status = WdfRequestRetrieveOutputMemory(Request, &hMemory);
+		if (NT_SUCCESS(Status)) {
+			//根据之前获取到的参数进行内存拷贝，填写读请求的缓冲区
+			Status = WdfMemoryCopyFromBuffer(hMemory, // Destination
+				0, // Offset into the destination
+				devExt->DiskImage + ByteOffset.LowPart, // source
+				Length);
+		}
+	}
+	//完成这个请求，需要将读取长度作为返回信息
+	WdfRequestCompleteWithInformation(Request, Status, (ULONG_PTR)Length);
 }
 
 VOID
@@ -89,7 +332,33 @@ RamDiskEvtIoWrite(
 	IN size_t Length
 )
 {
+	//写和读基本一样
+	PDEVICE_EXTENSION      devExt = QueueGetExtension(Queue)->DeviceExtension;
+	NTSTATUS               Status = STATUS_INVALID_PARAMETER;
+	WDF_REQUEST_PARAMETERS Parameters;
+	LARGE_INTEGER          ByteOffset;
+	WDFMEMORY              hMemory;
 
+	WDF_REQUEST_PARAMETERS_INIT(&Parameters);
+
+	WdfRequestGetParameters(Request, &Parameters);
+
+	ByteOffset.QuadPart = Parameters.Parameters.Write.DeviceOffset;
+
+	if (RamDiskCheckParameters(devExt, ByteOffset, Length)) {
+
+		Status = WdfRequestRetrieveInputMemory(Request, &hMemory);
+		if (NT_SUCCESS(Status)) {
+
+			Status = WdfMemoryCopyToBuffer(hMemory, // Source
+				0, // offset in Source memory where the copy has to start
+				devExt->DiskImage + ByteOffset.LowPart, // destination
+				Length);
+		}
+
+	}
+
+	WdfRequestCompleteWithInformation(Request, Status, (ULONG_PTR)Length);
 }
 
 VOID
@@ -204,54 +473,6 @@ Return Value:
 	return;
 }
 
-#pragma pack(1)
-
-typedef struct  _BOOT_SECTOR
-{
-	UCHAR       bsJump[3];          // x86 jmp instruction, checked by FS
-	CCHAR       bsOemName[8];       // OEM name of formatter
-	USHORT      bsBytesPerSec;      // Bytes per Sector
-	UCHAR       bsSecPerClus;       // Sectors per Cluster
-	USHORT      bsResSectors;       // Reserved Sectors
-	UCHAR       bsFATs;             // Number of FATs - we always use 1
-	USHORT      bsRootDirEnts;      // Number of Root Dir Entries
-	USHORT      bsSectors;          // Number of Sectors
-	UCHAR       bsMedia;            // Media type - we use RAMDISK_MEDIA_TYPE
-	USHORT      bsFATsecs;          // Number of FAT sectors
-	USHORT      bsSecPerTrack;      // Sectors per Track - we use 32
-	USHORT      bsHeads;            // Number of Heads - we use 2
-	ULONG       bsHiddenSecs;       // Hidden Sectors - we set to 0
-	ULONG       bsHugeSectors;      // Number of Sectors if > 32 MB size
-	UCHAR       bsDriveNumber;      // Drive Number - not used
-	UCHAR       bsReserved1;        // Reserved
-	UCHAR       bsBootSignature;    // New Format Boot Signature - 0x29
-	ULONG       bsVolumeID;         // VolumeID - set to 0x12345678
-	CCHAR       bsLabel[11];        // Label - set to RamDisk
-	CCHAR       bsFileSystemType[8];// File System Type - FAT12 or FAT16
-	CCHAR       bsReserved2[448];   // Reserved
-	UCHAR       bsSig2[2];          // Originial Boot Signature - 0x55, 0xAA
-}   BOOT_SECTOR, * PBOOT_SECTOR;
-
-typedef struct  _DIR_ENTRY
-{
-	UCHAR       deName[8];          // File Name
-	UCHAR       deExtension[3];     // File Extension
-	UCHAR       deAttributes;       // File Attributes
-	UCHAR       deReserved;         // Reserved
-	USHORT      deTime;             // File Time
-	USHORT      deDate;             // File Date
-	USHORT      deStartCluster;     // First Cluster of file
-	ULONG       deFileSize;         // File Length
-}   DIR_ENTRY, * PDIR_ENTRY;
-
-#pragma pack()
-
-#define DIR_ATTR_READONLY   0x01
-#define DIR_ATTR_HIDDEN     0x02
-#define DIR_ATTR_SYSTEM     0x04
-#define DIR_ATTR_VOLUME     0x08
-#define DIR_ATTR_DIRECTORY  0x10
-#define DIR_ATTR_ARCHIVE    0x20
 
 NTSTATUS
 RamDiskFormatDisk(
@@ -259,16 +480,16 @@ RamDiskFormatDisk(
 )
 /**
  * 格式化磁盘为FAT12/16
- * 
+ *
  * 磁盘特性相关：
  * 扇区是读写的基本单位，硬盘物理设计上，一次最少读写一个扇区（一般为512字节）
  * 盘面上被分为多个同心圆，即多个磁道，每个磁道被划分为同样数目的扇区
  * 多个盘面相同位置的磁道组成了一个柱面，柱面越多磁道越细
  * 这些都属于物理结构
- * 
+ *
  * 操作系统对磁盘管理是一种逻辑上的结构，通过文件系统来实现
  * 微软的文件系统包括：FAT12、FAT16、FAT32、NTFS等
- * 
+ *
  * 在FAT12/16系统中：
  * MBR（主引导记录）位于整个磁盘的第一个扇区，大小为一个扇区大小
  * 起始处为一段程序，在BIOS代码执行到最后时，会将这段程序加载到内存中执行
@@ -574,3 +795,33 @@ NTSTATUS DriverEntry(IN PDRIVER_OBJECT pDriverObject, IN PUNICODE_STRING pRegist
 		WDF_NO_HANDLE	//作为函数的输出结果，即WDF驱动的驱动对象
 	);//至此将config与驱动挂钩，运行过程中，PnP管理器就会根据需要调用回调函数
 }
+
+/**
+ * 编译后安装：
+ * 需要生成产物sys文件以及inf文件，还有WDK安装目录/redist/wdf下面的WdfCoInstaller01007.dll
+ * 控制面板中找到添加硬件，手动从磁盘安装，选择inf文件，重启后会出现一个盘
+ *
+ * 安装向导读取inf文件后，sys文件会被拷贝到System32/drivers目录下
+ * 并且会在注册表中新建一些项
+ * （1）“\HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Enum\Root\UNKNOWN”。
+ * 这是在安装之后新增加的一个键，在这之下还有一个叫作0000的子键，
+ * 可以在管理员用户下用regedit命令查看这个键的内容。
+ * 在Windows系统启动时，PnP管理器会枚举“\HKEY_ LOCAL_MACHINE\SYSTEM\CurrentControlSet\ Enum\Root\”下的所有键，
+ * 并会根据键中的信息为每个设备创建一个PDO（物理设备对象）。
+ * 在“\HKEY_LOCAL_MACHINE\SYSTEM\ CurrentControlSet\Enum\ Root\”下的所有键代表了在系统安装时记录的或者通过添加硬件向导添加的一个硬件信息，
+ * Windows虚拟了一条根总线并且把这些硬件挂接在上面。PnP管理器完成PDO的建立之后会进行标准的PnP操作，
+ * 与PDO相对应的驱动将会被加载。在“\HKEY_LOCAL_ MACHINE\SYSTEM\CurrentControlSet\Enum\Root\ UNKNOWN\0000”键下可以看到和Ramdisk相关的信息，
+ * 其中有一个值是Service，系统将会寻找这个值指明的驱动，进行加载和调用。另外，在这个键下面还有一个值是ClassGUID，
+ * 这个值的内容将作为这一类驱动的索引。
+ * （2）“\HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Ramdisk”。
+ * 系统会去加载Service所指明的驱动，
+ * 而在“\HKEY_LOCAL_MACHINE\SYSTEM\ CurrentControlSet\Enum\Root\UNKNOWN\0000”中的Service值的内容正是Ramdisk，
+ * 于是系统就会在“\HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\”下面寻找这个叫作Ramdisk的服务，
+ * 并根据它的内容去最终加载驱动程序本身。
+ * “\HKEY_LOCAL_MACHINE\ SYSTEM\CurrentControlSet\Services\Ramdisk”是一个标准的服务描述键，
+ * 这个键最重要的一点就是指明了ramdisk.sys文件的位置。
+ * （3）“\HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Class\ClassGUID”。
+ * 注意这个键最后的ClassGUID实际上是一长串数字，数字的内容在“\HKEY_LOCAL_ MACHINE\SYSTEM\CurrentControlSet\Enum\Root\UNKNOWN\0000”键的ClassGUID值中。
+ * 这个键说明了具有同样Class的驱动所通用的一些信息，在Ramdisk驱动中这个键没有太大的用处，
+ * 但是在其他的驱动如类过滤驱动等驱动程序中，这个键却起着非常重要的作用。
+ */
