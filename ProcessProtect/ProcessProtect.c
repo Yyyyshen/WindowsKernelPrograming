@@ -265,6 +265,42 @@ VOID HOOK_GET_HANDLE()
 	ObjectHookOpenEvent((PVOID)HOOK_OpenProcedure_Event, (PVOID*)&g_pOrigin_OpenProcedure);
 }
 
+/**
+ * 继续研究，如何从内核对象角度保护进程
+ *
+ * 在安全软件中，进程和内核模块相互配合，任何一方破坏都会引起一定的异常
+ * 由于攻击内核模块难度较大，所以更偏向于攻击安全软件上层进程
+ *
+ * 保护原理：
+ * 进程对象也是一种内核对象，所以通过上面的方式拦截进程句柄获取可以一定程度上保护进程对象
+ * 另外，相对于其他内核对象，进程对象保护有特殊性
+ * 从操作内核对象角度，对进程操作比其他对象要多，比如获取进程的命令行、枚举进程内线程、等待一个进程退出等
+ * 如果一味禁止非安全进程（不一定全是恶意进程）打开进程句柄，可能会导致一些软件间的兼容问题
+ * 所以，对于进程，应当允许非恶意操作；恶意操作主要指的是通过进程句柄恶意修改、写入进程数据或恶意终止进程
+ *
+ * 对内核对象不同操作需要不同的权限，方案设计上可以用如下思路：
+ * 进程权限主要分为制度权限和修改权限，对于非安全进程，给与只读权限，能够做一些查询操作，但无法破坏进程
+ * 控制权限可以通过上面说的Hook函数NtOpenProcess中的DesiredAccess参数，或者修改OpenProcedure函数的GrandedAcess参数
+ *
+ * 由于OpenProcedure函数未公开，在不同环境收集所有偏移情况需要消耗大量时间和人力
+ * 从Vista系统开始，系统新增了ObRegisterCallbacks函数，这个函数可以监控获取进程和线程句柄，并能阻止句柄获取和修改权限
+ */
+//能做到与挂钩OpenProcedure相同的功能
+NTSTATUS ObRegisterCallbacks(_In_ POB_CALLBACK_REGISTRATION CallbackRegistration, _Outptr_ PVOID* RegistrationHandle);
+
+/**
+ * 除了通过进程句柄破坏进程，还有很多方式
+ * 例如：
+ * 攻击进程内的线程（终之、挂起线程，向线程中插入APC等
+ * 攻击进程所创建的内核对象
+ * 攻击进程的Windows窗口
+ * 攻击进程需要加载的文件和注册表
+ * 向进程发送欺骗消息（如系统关机），欺骗进程退出
+ * 通过DLL注入机制
+ * 利用系统提供的Exe劫持或重定向机制控制或禁止进程启动，如IFEO机制
+ * 攻击或利用0day漏洞
+ */
+
 NTSTATUS DriverEntry(IN PDRIVER_OBJECT DriverObject, IN PUNICODE_STRING RegistryPath)
 {
 	return STATUS_SUCCESS;
